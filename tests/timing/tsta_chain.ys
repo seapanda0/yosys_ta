@@ -1,0 +1,40 @@
+# DFF -> INV -> INV -> DFF and DFF -> NAND2 -> primary output
+read_liberty -lib timing.lib
+read_verilog <<EOT
+module top(input clk, input a, output y);
+  wire q0, n1, n2, q1;
+  DFF_X1 ff0 (.CK(clk), .D(a), .Q(q0));
+  INV_X1 i1 (.A(q0), .Y(n1));
+  INV_X1 i2 (.A(n1), .Y(n2));
+  DFF_X1 ff1 (.CK(clk), .D(n2), .Q(q1));
+  NAND2_X1 g (.A(q1), .B(a), .Y(y));
+endmodule
+EOT
+hierarchy -top top
+
+# The library tables are linear, so the expected values can be computed by hand
+# (ns/pF, clock slew 0, output load 0 fF):
+#   q0: load 0.002           clk->q  = 0.2 + 5*0.002 = 0.210, slew = 0.01 + 10*0.002 = 0.030
+#   n1: load 0.002           delay   = 0.02 + 5*0.002 + 0.1*0.030 = 0.033, slew = 0.01 + 0.02 + 0.05*0.030 = 0.0315
+#   n2: load 0.002           delay   = 0.02 + 0.01 + 0.1*0.0315 = 0.03315, slew = 0.03 + 0.05*0.0315 = 0.031575
+#   ff1/D: arrival 0.27615, setup = 0.1 + 0.2*0.031575 = 0.106315
+#   -> min period reg-to-reg = 0.382465
+#   q1: load 0.002 -> 0.210 / 0.030;  y: load 0 -> 0.03 + 0.1*0.030 = 0.033 -> arrival 0.243
+tsta -liberty timing.lib -period 1 -load 0
+scratchpad -assert timing.result.min_period 0.382465
+scratchpad -assert timing.result.wns 0.617535
+scratchpad -assert timing.result.tns 0.000000
+
+# a period that is too short: both endpoints violate (reg-to-reg by 0.082465, the output by -0.057 -> ok)
+tsta -liberty timing.lib -period 0.3 -load 0
+scratchpad -assert timing.result.wns -0.082465
+scratchpad -assert timing.result.tns -0.082465
+
+# input and output delays: a -> ff0/D has no logic, a -> g -> y: 0.5 + 0.03 + 0.4 = 0.93
+timing_setup -liberty timing.lib -period 1 -load 0 -input_delay 0.5 -output_delay 0.4
+tsta
+scratchpad -assert timing.result.wns 0.070000
+
+# an output load of 10 fF slows down the NAND2: delay 0.03 + 6*0.01 = 0.09
+tsta -load 10
+scratchpad -assert timing.result.wns 0.010000

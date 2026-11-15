@@ -1,6 +1,34 @@
 if (YOSYS_ENABLE_ABC)
 	set(abc_requires abc abc9)
 endif()
+yosys_pass(synth_timing
+	synth_timing.cc
+	REQUIRES
+		${abc_requires}
+		alumacc
+		arith_tree
+		booth
+		check
+		clean
+		dfflibmap
+		flatten
+		fsm
+		hierarchy
+		memory
+		memory_map
+		opt
+		opt_clean
+		opt_expr
+		peepopt
+		proc
+		share
+		stat
+		techmap
+		timing_setup
+		tmap
+		tsta
+		wreduce
+)
 yosys_pass(synth
 	synth.cc
 	DEFINITIONS
@@ -46,6 +74,7 @@ yosys_pass(synth
 		choices/kogge-stone.v
 		choices/han-carlson.v
 		choices/sklansky.v
+		choices/ripple.v
 )
 
 yosys_pass(prep

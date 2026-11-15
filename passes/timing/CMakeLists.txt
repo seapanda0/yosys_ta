@@ -1,0 +1,41 @@
+if (YOSYS_ENABLE_ABC)
+	set(abc_requires abc)
+endif()
+yosys_core(timing_engine
+	timing_lib.cc
+	timing_lib.h
+	timing_sta.cc
+	timing_sta.h
+	timing_opt.cc
+	timing_opt.h
+	REQUIRES
+		libparse
+)
+yosys_pass(tsta
+	tsta.cc
+	PROVIDES
+		timing_setup
+	REQUIRES
+		timing_engine
+)
+yosys_pass(tsize
+	tsize.cc
+	REQUIRES
+		timing_engine
+)
+yosys_pass(tmap
+	tmap.cc
+	REQUIRES
+		${abc_requires}
+		timing_engine
+		alumacc
+		arith_tree
+		booth
+		dfflibmap
+		memory
+		memory_map
+		opt
+		opt_clean
+		share
+		techmap
+)
