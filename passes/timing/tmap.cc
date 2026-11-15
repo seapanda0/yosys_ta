@@ -79,18 +79,26 @@ struct MapRecipe {
 	std::string descr;
 	std::string lib_args;
 	std::string script;
-	bool area;  // area oriented recipe, only used if there is a clock period to meet
-	int effort; // minimum effort level at which the recipe is explored
+	bool area;         // area oriented recipe, only used if there is a clock period to meet
+	int effort;        // minimum effort level at which the recipe is explored when optimizing for speed
+	int period_effort; // same, if there is a clock period to meet
 };
 
+// The recipes were selected with a study on 18 designs (see
+// docs/timing_aware_synthesis.md). Sizing and buffering is left to the
+// timing driven optimization that follows the mapping.
+#define TMAP_SOPB "&st; &syn2; &if -g -K 6; &synch2"
 static const std::vector<MapRecipe> map_recipes = {
-	{"speed", "two rounds of SOP balancing, then delay driven mapping with structural choices", "",
-		"strash; &get -n; &st; &syn2; &if -g -K 6; &synch2; &if -g -K 6; &synch2; &put; "
-		"strash; dch -f; map {D}; topo; upsize -c {D}; dnsize -c {D}", false, 0},
-	{"speed2", "SOP balancing on the logic network, then delay driven mapping with structural choices", "",
-		"strash; dch -f; if -g -K 6; strash; dch -f; map {D}; topo; upsize -c {D}; dnsize -c {D}", false, 1},
-	{"area", "mapping with structural choices and area recovery, no restructuring for delay", "",
-		"strash; dch; map -B 0.9 {D}; topo; upsize -c {D}; dnsize -c {D}", true, 0},
+	{"speed", "SOP balancing on the AIG (two rounds) and on the logic network, then delay driven mapping with structural choices", "",
+		"strash; &get -n; " TMAP_SOPB "; &if -g -K 6; &synch2; &put; "
+		"strash; dch -f; if -g -K 6; strash; dch -f; map -B 0.9 {D}", false, 0, 0},
+	{"speed2", "two rounds of SOP balancing on the logic network, then delay driven mapping with structural choices", "",
+		"strash; dch -f; if -g -K 6; strash; dch -f; if -g -K 6; strash; dch -f; map -B 0.9 {D}", false, 1, 2},
+	{"speed3", "three rounds of SOP balancing on the AIG, then delay driven mapping with structural choices", "",
+		"strash; &get -n; " TMAP_SOPB "; &if -g -K 6; &synch2; &if -g -K 6; &synch2; &put; "
+		"strash; dch -f; map -B 0.9 {D}", false, 2, 2},
+	{"area", "delay driven mapping with structural choices and area recovery, no restructuring for delay", "",
+		"strash; dch; map -B 0.9 {D}", true, 0, 0},
 };
 
 struct Candidate {
@@ -182,7 +190,6 @@ struct TmapPass : public Pass {
 	Timing::SizerOptions size_opt;
 	std::shared_ptr<Timing::Library> lib;
 	bool nosize = false;
-	std::string constr_file;
 	int cand_counter = 0;
 
 	static std::string replace_all(std::string s, const std::string &from, const std::string &to)
@@ -255,8 +262,6 @@ struct TmapPass : public Pass {
 		std::vector<std::string> cmd = lib_args("abc");
 		if (!recipe.lib_args.empty())
 			cmd.push_back("-liberty_args"), cmd.push_back(recipe.lib_args);
-		if (!constr_file.empty())
-			cmd.push_back("-constr"), cmd.push_back(constr_file);
 		cmd.push_back("-script");
 		cmd.push_back("+" + s);
 		return cmd;
@@ -410,22 +415,11 @@ struct TmapPass : public Pass {
 					log_cmd_error("Unknown mapping recipe '%s'.\n", n);
 			}
 			for (size_t i = 0; i < custom_scripts.size(); i++)
-				recipes.push_back({stringf("custom%d", int(i)), "custom script", custom_lib_args, custom_scripts[i], false, 0});
+				recipes.push_back({stringf("custom%d", int(i)), "custom script", custom_lib_args, custom_scripts[i], false, 0, 0});
 		} else {
 			for (auto &r : map_recipes)
-				if (r.effort <= effort && (have_period || !r.area))
+				if (have_period ? r.period_effort <= effort : (r.effort <= effort && !r.area))
 					recipes.push_back(r);
-		}
-
-		// constraints for the sizing commands of ABC: primary inputs of the
-		// logic are driven by a weak buffer, outputs see a few gate loads
-		constr_file.clear();
-		if (!lib->buffers.empty()) {
-			constr_file = make_temp_file(get_base_tmpdir() + "/yosys-tmap-constr-XXXXXX");
-			const Timing::Cell *drv = lib->buffers[std::min<size_t>(1, lib->buffers.size() - 1)];
-			std::ofstream f(constr_file);
-			f << stringf("set_driving_cell %s\n", drv->name);
-			f << stringf("set_load %.3f\n", 4e3 * drv->pins[drv->buf_in].cap[0]);
 		}
 
 		std::vector<std::string> mod_names;
@@ -559,8 +553,6 @@ struct TmapPass : public Pass {
 			design->scratchpad_set_string("timing.result.candidate", best.name);
 		}
 
-		if (!constr_file.empty())
-			remove(constr_file.c_str());
 	}
 } TmapPass;
 
