@@ -47,7 +47,8 @@ struct TsizePass : public Pass {
 		log("     fixed by upsizing drivers or by splitting the fanout with buffers.\n");
 		log("  2. timing: the worst path is traced and candidate moves are generated\n");
 		log("     for it (resizing a cell on the path, downsizing a side load, isolating\n");
-		log("     non-critical sinks behind a buffer, driving a net through a buffer).\n");
+		log("     non-critical sinks behind a buffer, driving a net through a buffer,\n");
+		log("     decoupling the load of a primary output with a buffer).\n");
 		log("     The moves are ranked by a local delay estimate, and a move is kept if\n");
 		log("     a full timing update confirms that it improves the design.\n");
 		log("  3. area: cells are downsized as far as their slack allows.\n");
@@ -57,6 +58,10 @@ struct TsizePass : public Pass {
 		log("\n");
 		log("    -max_time <seconds>\n");
 		log("        time limit for the timing phase\n");
+		log("\n");
+		log("    -lookahead <n>\n");
+		log("        if no single move improves the worst path, try sequences of up to\n");
+		log("        <n>+1 moves (default: 2)\n");
 		log("\n");
 		log("    -max_tran <ns>\n");
 		log("        maximum transition time (default: default_max_transition of the\n");
@@ -91,6 +96,10 @@ struct TsizePass : public Pass {
 			}
 			if (args[argidx] == "-max_time" && argidx + 1 < args.size()) {
 				opt.max_time = atof(args[++argidx].c_str());
+				continue;
+			}
+			if (args[argidx] == "-lookahead" && argidx + 1 < args.size()) {
+				opt.lookahead = atoi(args[++argidx].c_str());
 				continue;
 			}
 			if (args[argidx] == "-max_tran" && argidx + 1 < args.size()) {

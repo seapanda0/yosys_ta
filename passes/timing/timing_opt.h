@@ -30,6 +30,7 @@ struct SizerOptions {
 	int max_iter = 0;       // maximum number of timing moves (0: automatic)
 	double max_time = 0;    // time limit in seconds for the timing phase (0: none)
 	double max_tran = 0;    // maximum transition time in ns (0: library default)
+	int lookahead = 2;      // number of additional moves that may follow a move that does not pay off on its own
 	bool resize = true;     // allow cell resizing
 	bool buffer = true;     // allow buffer insertion
 	bool repair = true;     // fix max capacitance / max transition violations

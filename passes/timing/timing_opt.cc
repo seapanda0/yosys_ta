@@ -70,12 +70,33 @@ struct Move {
 	// RESIZE
 	RTLIL::Cell *cell = nullptr;
 	const Cell *old_lc = nullptr, *new_lc = nullptr;
-	// BUFFER
+	// BUFFER: the sinks of 'src' in each group are moved behind a buffer of their own
+	typedef std::vector<std::pair<RTLIL::Cell *, IdString>> SinkList;
 	SigBit src;
 	const Cell *buf = nullptr;
-	std::vector<std::pair<RTLIL::Cell *, IdString>> moved;
-	RTLIL::Cell *buf_cell = nullptr;
-	RTLIL::Wire *buf_wire = nullptr;
+	std::vector<SinkList> groups;
+	std::vector<RTLIL::Cell *> buf_cells;
+	// BUFFER with decoupled primary output: the driver moves to the new net
+	// as well, the buffer drives the port (single group)
+	RTLIL::Cell *drv_cell = nullptr;
+	IdString drv_port;
+
+	int n_sinks() const
+	{
+		int n = 0;
+		for (auto &g : groups)
+			n += GetSize(g);
+		return n;
+	}
+
+	std::string describe() const
+	{
+		if (kind == RESIZE)
+			return stringf("resize %s %s -> %s", log_id(cell), old_lc->name, new_lc->name);
+		if (drv_cell != nullptr)
+			return stringf("decouple output %s with %s (%d sinks)", log_signal(src), buf->name, n_sinks());
+		return stringf("buffer %s with %d x %s (%d sinks)", log_signal(src), GetSize(groups), buf->name, n_sinks());
+	}
 };
 
 struct Sizer {
@@ -91,6 +112,8 @@ struct Sizer {
 	double max_tran;
 	std::set<std::pair<RTLIL::Cell *, const Cell *>> rejected_resize;
 	std::set<std::pair<SigBit, const Cell *>> rejected_buffer;
+	std::set<std::pair<SigBit, const Cell *>> rejected_decouple;
+	bool ignore_rejected = false;
 
 	Sizer(RTLIL::Module *module, const Library *lib, const StaOptions &sta_opt, const SizerOptions &opt)
 		: module(module), lib(lib), opt(opt), sta(module, lib, sta_opt)
@@ -119,6 +142,27 @@ struct Sizer {
 			}
 	}
 
+	// netlist edit of a BUFFER move
+	void insert_buffers(Move &m)
+	{
+		m.buf_cells.clear();
+		for (auto &group : m.groups) {
+			RTLIL::Wire *wire = module->addWire(NEW_ID_SUFFIX("tbuf"));
+			RTLIL::Cell *cell = module->addCell(NEW_ID_SUFFIX("tbuf"), sta.type_id(m.buf));
+			if (m.drv_cell != nullptr) {
+				m.drv_cell->setPort(m.drv_port, wire);
+				cell->setPort(sta.pin_id(m.buf, m.buf->buf_in), wire);
+				cell->setPort(sta.pin_id(m.buf, m.buf->buf_out), m.src);
+			} else {
+				cell->setPort(sta.pin_id(m.buf, m.buf->buf_in), m.src);
+				cell->setPort(sta.pin_id(m.buf, m.buf->buf_out), wire);
+			}
+			for (auto &it : group)
+				it.first->setPort(it.second, wire);
+			m.buf_cells.push_back(cell);
+		}
+	}
+
 	void apply(Move &m)
 	{
 		if (m.kind == Move::RESIZE) {
@@ -127,12 +171,7 @@ struct Sizer {
 			sta.insts[i].lc = m.new_lc;
 			update({i});
 		} else {
-			m.buf_wire = module->addWire(NEW_ID_SUFFIX("tbuf"));
-			m.buf_cell = module->addCell(NEW_ID_SUFFIX("tbuf"), sta.type_id(m.buf));
-			m.buf_cell->setPort(sta.pin_id(m.buf, m.buf->buf_in), m.src);
-			m.buf_cell->setPort(sta.pin_id(m.buf, m.buf->buf_out), m.buf_wire);
-			for (auto &it : m.moved)
-				it.first->setPort(it.second, m.buf_wire);
+			insert_buffers(m);
 			sta.build();
 			sta.propagate();
 		}
@@ -146,12 +185,15 @@ struct Sizer {
 			sta.insts[i].lc = m.old_lc;
 			update({i});
 		} else {
-			for (auto &it : m.moved)
-				it.first->setPort(it.second, m.src);
-			// the unused wire is left behind for opt_clean
-			module->remove(m.buf_cell);
-			m.buf_cell = nullptr;
-			m.buf_wire = nullptr;
+			// the unused wires are left behind for opt_clean
+			for (auto cell : m.buf_cells)
+				module->remove(cell);
+			m.buf_cells.clear();
+			for (auto &group : m.groups)
+				for (auto &it : group)
+					it.first->setPort(it.second, m.src);
+			if (m.drv_cell != nullptr)
+				m.drv_cell->setPort(m.drv_port, m.src);
 			sta.build();
 			sta.propagate();
 		}
@@ -328,7 +370,7 @@ struct Sizer {
 				const Inst &inst = sta.insts[pn.inst];
 				if (inst.lc->family >= 0)
 					for (auto alt : lib->families[inst.lc->family]) {
-						if (alt == inst.lc || alt->dont_use || rejected_resize.count({inst.cell, alt}))
+						if (alt == inst.lc || alt->dont_use || (!ignore_rejected && rejected_resize.count({inst.cell, alt})))
 							continue;
 						double g = eval_resize(path, k, alt);
 						if (g > min_gain) {
@@ -362,7 +404,7 @@ struct Sizer {
 					if (si.lc->family < 0 || si.lc->size_idx == 0)
 						continue;
 					const Cell *alt = lib->families[si.lc->family][si.lc->size_idx - 1];
-					if (alt->dont_use || rejected_resize.count({si.cell, alt}))
+					if (alt->dont_use || (!ignore_rejected && rejected_resize.count({si.cell, alt})))
 						continue;
 					double dcap = alt->pins[sink.second].cap[pn.rf] - si.lc->pins[sink.second].cap[pn.rf];
 					if (dcap >= 0)
@@ -385,15 +427,45 @@ struct Sizer {
 				}
 			}
 
-			if (!opt.buffer || lib->buffers.empty() || net.sinks.empty())
+			if (!opt.buffer || lib->buffers.empty())
 				continue;
 
 			// buffer moves
 			int rf = pn.rf;
 			for (auto buf : lib->buffers) {
-				if (rejected_buffer.count({net.bit, buf}))
-					continue;
 				double cin = buf->pins[buf->buf_in].cap[rf];
+
+				// (3) decouple the load of a primary output: the driver and the
+				// internal sinks move to a new net, the buffer drives the port
+				if (net.n_po > 0 && !(k + 1 == GetSize(path) && we.inst < 0) &&
+						(ignore_rejected || !rejected_decouple.count({net.bit, buf}))) {
+					double po_load = net.n_po * (sta.opt.output_load + sta.opt.wire_cap);
+					double arr, slew, bd, bs;
+					if (po_load > 1.5 * cin && eval_node(path, k, cin + sta.opt.wire_cap - po_load, arr, slew) &&
+							eval_comb(buf, buf->buf_in, buf->buf_out, rf, rf, slew, po_load, bd, bs) && bs <= max_tran) {
+						double g = net.arr[rf] - arr - next_stage_penalty(path, k, slew);
+						double po_slack = sta.opt.period - sta.opt.output_delay - (arr + bd);
+						if (g > min_gain && po_slack > sta.wns + g + 0.01) {
+							Move m;
+							m.kind = Move::BUFFER;
+							m.gain = g;
+							m.src = net.bit;
+							m.buf = buf;
+							m.drv_cell = sta.insts[pn.inst].cell;
+							m.drv_port = sta.pin_id(sta.insts[pn.inst].lc, net.drv_pin);
+							m.groups.emplace_back();
+							for (auto &sink : net.sinks)
+								m.groups.back().push_back({sta.insts[sink.first].cell, sta.pin_id(sta.insts[sink.first].lc, sink.second)});
+							moves.push_back(m);
+						}
+					}
+				}
+
+				if (!ignore_rejected && rejected_buffer.count({net.bit, buf}))
+					continue;
+
+				if (net.sinks.empty())
+					continue;
 
 				// (1) isolate non-critical sinks behind a buffer
 				if (GetSize(net.sinks) > 1) {
@@ -407,16 +479,26 @@ struct Sizer {
 							cand.push_back({sl, si});
 					}
 					std::sort(cand.begin(), cand.end());
-					// drop the most critical candidates until the remaining ones tolerate the buffer delay
+					// Drop the most critical candidates until the remaining ones fit
+					// the buffer and tolerate its delay. (A net with a very large
+					// fanout is unloaded step by step this way.)
 					int first = 0;
 					double g = 0;
+					double cap_limit = buf->pins[buf->buf_out].max_cap > 0 ? 0.9 * buf->pins[buf->buf_out].max_cap : 1e9;
 					for (int round = 0; round < 4 && first < GetSize(cand); round++) {
 						double cmoved = 0;
-						for (int c = first; c < GetSize(cand); c++)
-							cmoved += sta.insts[net.sinks[cand[c].second].first].lc->pins[net.sinks[cand[c].second].second].cap[rf] + sta.opt.wire_cap;
+						for (int c = GetSize(cand) - 1; c >= first; c--) {
+							auto &sink = net.sinks[cand[c].second];
+							double pc = sta.insts[sink.first].lc->pins[sink.second].cap[rf] + sta.opt.wire_cap;
+							if (cmoved + pc > cap_limit) {
+								first = c + 1;
+								break;
+							}
+							cmoved += pc;
+						}
 						double arr, slew, bd, bs;
 						g = 0;
-						if (cmoved < 1.2 * cin || (buf->pins[buf->buf_out].max_cap > 0 && cmoved > buf->pins[buf->buf_out].max_cap))
+						if (first >= GetSize(cand) || cmoved < 1.2 * cin)
 							{ first = GetSize(cand); break; }
 						if (!eval_node(path, k, cin + sta.opt.wire_cap - cmoved, arr, slew))
 							{ first = GetSize(cand); break; }
@@ -438,38 +520,64 @@ struct Sizer {
 						m.gain = g;
 						m.src = net.bit;
 						m.buf = buf;
+						m.groups.emplace_back();
 						for (int c = first; c < GetSize(cand); c++) {
 							auto &sink = net.sinks[cand[c].second];
-							m.moved.push_back({sta.insts[sink.first].cell, sta.pin_id(sta.insts[sink.first].lc, sink.second)});
+							m.groups.back().push_back({sta.insts[sink.first].cell, sta.pin_id(sta.insts[sink.first].lc, sink.second)});
 						}
 						moves.push_back(m);
 					}
 				}
 
-				// (2) drive all sinks through a buffer
+				// (2) drive all sinks through one or several parallel buffers
 				{
+					std::vector<std::pair<double, int>> order; // (slack, sink index)
 					double call = 0;
-					for (auto &sink : net.sinks)
+					for (int si = 0; si < GetSize(net.sinks); si++) {
+						auto &sink = net.sinks[si];
 						call += sta.insts[sink.first].lc->pins[sink.second].cap[rf] + sta.opt.wire_cap;
-					double arr, slew, bd, bs;
-					if (call < 2 * cin || (buf->pins[buf->buf_out].max_cap > 0 && call > buf->pins[buf->buf_out].max_cap))
+						order.push_back({sta.pin_slack(sink.first, sink.second), si});
+					}
+					if (call < 2 * cin)
 						continue;
-					if (!eval_node(path, k, cin + sta.opt.wire_cap - call, arr, slew))
-						continue;
-					if (!eval_comb(buf, buf->buf_in, buf->buf_out, rf, rf, slew, call, bd, bs))
-						continue;
-					double g = net.arr[rf] - (arr + bd);
-					// slew at the sinks changes from net.slew to bs
-					if (k + 1 < GetSize(path))
-						g -= next_stage_penalty(path, k, bs);
-					if (g > min_gain) {
+					double max_cap = buf->pins[buf->buf_out].max_cap > 0 ? 0.9 * buf->pins[buf->buf_out].max_cap : 1e9;
+					int g_min = std::max(1, int(ceil(call / max_cap)));
+					int best_g = 0;
+					double best_gain = min_gain;
+					for (int g = g_min; g <= 4 * g_min && g <= GetSize(net.sinks); g *= 2) {
+						double arr, slew, bd, bs;
+						if (g * cin > 0.7 * call)
+							break;
+						if (!eval_node(path, k, g * (cin + sta.opt.wire_cap) - call, arr, slew))
+							break;
+						if (!eval_comb(buf, buf->buf_in, buf->buf_out, rf, rf, slew, call / g, bd, bs))
+							break;
+						// the slew at the sinks changes from net.slew to bs
+						double gain = net.arr[rf] - (arr + bd) - next_stage_penalty(path, k, bs);
+						if (gain > best_gain) {
+							best_gain = gain;
+							best_g = g;
+						}
+					}
+					if (best_g > 0) {
 						Move m;
 						m.kind = Move::BUFFER;
-						m.gain = g;
+						m.gain = best_gain;
 						m.src = net.bit;
 						m.buf = buf;
-						for (auto &sink : net.sinks)
-							m.moved.push_back({sta.insts[sink.first].cell, sta.pin_id(sta.insts[sink.first].lc, sink.second)});
+						// groups of similar slack and equal capacitance
+						std::sort(order.begin(), order.end());
+						double c = 0;
+						m.groups.emplace_back();
+						for (auto &it : order) {
+							auto &sink = net.sinks[it.second];
+							if (c >= call / best_g && GetSize(m.groups) < best_g) {
+								m.groups.emplace_back();
+								c = 0;
+							}
+							m.groups.back().push_back({sta.insts[sink.first].cell, sta.pin_id(sta.insts[sink.first].lc, sink.second)});
+							c += sta.insts[sink.first].lc->pins[sink.second].cap[rf] + sta.opt.wire_cap;
+						}
 						moves.push_back(m);
 					}
 				}
@@ -533,31 +641,25 @@ struct Sizer {
 				m.src = net.bit;
 				m.buf = buf;
 				double c = 0;
+				m.groups.emplace_back();
 				for (auto &it : sinks) {
 					auto &sink = net.sinks[it.second];
 					double pc = sta.insts[sink.first].lc->pins[sink.second].cap[RISE] + sta.opt.wire_cap;
-					if (!m.moved.empty() && c + pc > group_cap) {
-						buf_moves.push_back(m);
-						m.moved.clear();
+					if (!m.groups.back().empty() && c + pc > group_cap) {
+						m.groups.emplace_back();
 						c = 0;
 					}
-					m.moved.push_back({sta.insts[sink.first].cell, sta.pin_id(sta.insts[sink.first].lc, sink.second)});
+					m.groups.back().push_back({sta.insts[sink.first].cell, sta.pin_id(sta.insts[sink.first].lc, sink.second)});
 					c += pc;
 				}
-				if (!m.moved.empty())
-					buf_moves.push_back(m);
+				buf_moves.push_back(m);
 				fixed++;
 			}
 			if (fixed == 0)
 				break;
 			for (auto &m : buf_moves) {
-				m.buf_wire = module->addWire(NEW_ID_SUFFIX("tbuf"));
-				m.buf_cell = module->addCell(NEW_ID_SUFFIX("tbuf"), sta.type_id(m.buf));
-				m.buf_cell->setPort(sta.pin_id(m.buf, m.buf->buf_in), m.src);
-				m.buf_cell->setPort(sta.pin_id(m.buf, m.buf->buf_out), m.buf_wire);
-				for (auto &it : m.moved)
-					it.first->setPort(it.second, m.buf_wire);
-				res.n_buffer++;
+				insert_buffers(m);
+				res.n_buffer += GetSize(m.groups);
 			}
 			res.n_repair += fixed;
 			sta.build();
@@ -566,6 +668,57 @@ struct Sizer {
 	}
 
 	// ---- critical path optimization ----
+
+	bool improved(double old_wns, double old_cost, double thr)
+	{
+		return sta.wns > old_wns + 1e-6 || (sta.wns > old_wns - 1e-7 && near_critical_cost(thr) < old_cost - 1e-6);
+	}
+
+	void reject(const Move &m)
+	{
+		if (m.kind == Move::RESIZE)
+			rejected_resize.insert({m.cell, m.new_lc});
+		else if (m.drv_cell != nullptr)
+			rejected_decouple.insert({m.src, m.buf});
+		else
+			rejected_buffer.insert({m.src, m.buf});
+	}
+
+	// Tries the candidate moves for the current worst path. A move that does
+	// not improve the design on its own (typically because it makes another
+	// path critical) is kept tentatively while up to 'depth' further moves
+	// are tried on the new worst path. On success the accepted moves are
+	// appended to 'seq'.
+	bool search(int depth, int width, double old_wns, double old_cost, double thr, std::vector<Move> &seq)
+	{
+		if (sta.worst_endpoint < 0)
+			return false;
+		auto path = sta.worst_path();
+		std::vector<Move> moves;
+		collect_moves(path, moves);
+		int tries = 0;
+		for (auto &m : moves) {
+			if (++tries > width)
+				break;
+			apply(m);
+			if (improved(old_wns, old_cost, thr)) {
+				seq.push_back(m);
+				return true;
+			}
+			if (depth > 0) {
+				if (search(depth - 1, std::max(2, width / 2), old_wns, old_cost, thr, seq)) {
+					seq.push_back(m);
+					return true;
+				}
+			} else if (!ignore_rejected) {
+				if (opt.verbose)
+					log("         rejected: %s (est. gain %.4f) -> wns %.4f (was %.4f)\n", m.describe(), m.gain, sta.wns, old_wns);
+				reject(m);
+			}
+			undo(m);
+		}
+		return false;
+	}
 
 	void timing_phase()
 	{
@@ -581,53 +734,45 @@ struct Sizer {
 					std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() > opt.max_time)
 				break;
 
-			auto path = sta.worst_path();
-			std::vector<Move> moves;
-			collect_moves(path, moves);
-
 			double old_wns = sta.wns;
 			double win = std::max(0.02, 0.03 * (sta.opt.period - sta.wns));
 			double thr = old_wns + win;
 			double old_cost = near_critical_cost(thr);
-			bool accepted = false;
-			int tries = 0;
-			for (auto &m : moves) {
-				if (++tries > 8)
-					break;
-				apply(m);
-				bool better = sta.wns > old_wns + 1e-6 || (sta.wns > old_wns - 1e-7 && near_critical_cost(thr) < old_cost - 1e-6);
-				if (better) {
-					accepted = true;
-					if (m.kind == Move::RESIZE)
-						res.n_resize++;
-					else
-						res.n_buffer++;
-					if (opt.verbose)
-						log("  %5d: %s %s -> wns %.4f (est. gain %.4f)\n", iter, m.kind == Move::RESIZE ? "resize" : "buffer",
-								m.kind == Move::RESIZE ? stringf("%s %s -> %s", log_id(m.cell), m.old_lc->name, m.new_lc->name) :
-								stringf("%s with %s (%d sinks)", log_signal(m.src), m.buf->name, GetSize(m.moved)), sta.wns, m.gain);
-					break;
+			std::vector<Move> seq;
+
+			// single moves first, then sequences of up to three moves
+			ignore_rejected = false;
+			bool accepted = search(0, 16, old_wns, old_cost, thr, seq);
+			if (!accepted && opt.lookahead > 0) {
+				ignore_rejected = true;
+				accepted = search(opt.lookahead, 6, old_wns, old_cost, thr, seq);
+				ignore_rejected = false;
+				if (accepted) {
+					rejected_resize.clear();
+					rejected_buffer.clear();
+					rejected_decouple.clear();
 				}
-				if (opt.verbose)
-					log("         rejected: %s (est. gain %.4f) -> wns %.4f (was %.4f), cost %.4f (was %.4f)\n",
-							m.kind == Move::RESIZE ? stringf("resize %s %s -> %s", log_id(m.cell), m.old_lc->name, m.new_lc->name) :
-							stringf("buffer %s with %s (%d sinks)", log_signal(m.src), m.buf->name, GetSize(m.moved)), m.gain,
-							sta.wns, old_wns, near_critical_cost(thr), old_cost);
-				if (m.kind == Move::RESIZE)
-					rejected_resize.insert({m.cell, m.new_lc});
-				else
-					rejected_buffer.insert({m.src, m.buf});
-				undo(m);
 			}
 			if (!accepted) {
 				if (opt.verbose)
-					log("  %5d: no acceptable move among %d candidates, stopping.\n", iter, GetSize(moves));
+					log("  %5d: no acceptable move, stopping.\n", iter);
 				break;
 			}
+			for (auto it = seq.rbegin(); it != seq.rend(); ++it) {
+				if (it->kind == Move::RESIZE)
+					res.n_resize++;
+				else
+					res.n_buffer += GetSize(it->groups);
+				if (opt.verbose)
+					log("  %5d: %s (est. gain %.4f)\n", iter, it->describe(), it->gain);
+			}
+			if (opt.verbose)
+				log("         -> wns %.4f\n", sta.wns);
 			if (++accepted_since_clear >= 200) {
 				accepted_since_clear = 0;
 				rejected_resize.clear();
 				rejected_buffer.clear();
+				rejected_decouple.clear();
 			}
 		}
 	}
