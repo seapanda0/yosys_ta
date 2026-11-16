@@ -19,6 +19,7 @@
 
 #include "passes/timing/timing_opt.h"
 #include <chrono>
+#include <cmath>
 
 YOSYS_NAMESPACE_BEGIN
 
@@ -114,6 +115,7 @@ struct Sizer {
 	std::set<std::pair<SigBit, const Cell *>> rejected_buffer;
 	std::set<std::pair<SigBit, const Cell *>> rejected_decouple;
 	bool ignore_rejected = false;
+	double best_wns = -1e30;
 
 	Sizer(RTLIL::Module *module, const Library *lib, const StaOptions &sta_opt, const SizerOptions &opt)
 		: module(module), lib(lib), opt(opt), sta(module, lib, sta_opt)
@@ -669,9 +671,48 @@ struct Sizer {
 
 	// ---- critical path optimization ----
 
-	bool improved(double old_wns, double old_cost, double thr)
+	// Smooth approximation of the critical path delay: log-sum-exp of the
+	// endpoint slacks with temperature tau. Unlike WNS it rewards progress on
+	// all near-critical endpoints.
+	double soft_delay(double tau)
 	{
-		return sta.wns > old_wns + 1e-6 || (sta.wns > old_wns - 1e-7 && near_critical_cost(thr) < old_cost - 1e-6);
+		double sum = 0;
+		for (auto &ep : sta.endpoints)
+			if (ep.slack < Sta::POS_INF / 2)
+				sum += std::exp(-(ep.slack - sta.wns) / tau);
+		return sum > 0 ? -sta.wns + tau * std::log(sum) : 0;
+	}
+
+	// reference state for accepting moves
+	struct Ref {
+		double wns, cost, thr, tau, soft;
+	};
+
+	Ref reference()
+	{
+		Ref r;
+		r.wns = sta.wns;
+		r.thr = r.wns + std::max(0.02, 0.03 * (sta.opt.period - sta.wns));
+		r.cost = near_critical_cost(r.thr);
+		r.tau = std::max(0.002, 0.004 * (sta.opt.period - sta.wns));
+		r.soft = soft_delay(r.tau);
+		return r;
+	}
+
+	// A move (sequence) is kept if it improves WNS, or keeps WNS and reduces
+	// the negative slack of the near-critical nets. In designs with many
+	// equally critical paths most moves make some other path a little worse;
+	// such a move is also kept if it clearly reduces the smooth critical
+	// delay and WNS stays within a small tolerance of the best value seen.
+	bool improved(const Ref &r)
+	{
+		if (sta.wns > r.wns + 1e-6)
+			return true;
+		if (sta.wns > r.wns - 1e-7 && near_critical_cost(r.thr) < r.cost - 1e-6)
+			return true;
+		if (sta.wns > best_wns - 2 * r.tau && soft_delay(r.tau) < r.soft - 0.02 * r.tau)
+			return true;
+		return false;
 	}
 
 	void reject(const Move &m)
@@ -689,7 +730,7 @@ struct Sizer {
 	// path critical) is kept tentatively while up to 'depth' further moves
 	// are tried on the new worst path. On success the accepted moves are
 	// appended to 'seq'.
-	bool search(int depth, int width, double old_wns, double old_cost, double thr, std::vector<Move> &seq)
+	bool search(int depth, int width, const Ref &ref, std::vector<Move> &seq)
 	{
 		if (sta.worst_endpoint < 0)
 			return false;
@@ -701,18 +742,18 @@ struct Sizer {
 			if (++tries > width)
 				break;
 			apply(m);
-			if (improved(old_wns, old_cost, thr)) {
+			if (improved(ref)) {
 				seq.push_back(m);
 				return true;
 			}
 			if (depth > 0) {
-				if (search(depth - 1, std::max(2, width / 2), old_wns, old_cost, thr, seq)) {
+				if (search(depth - 1, std::max(2, width / 2), ref, seq)) {
 					seq.push_back(m);
 					return true;
 				}
 			} else if (!ignore_rejected) {
 				if (opt.verbose)
-					log("         rejected: %s (est. gain %.4f) -> wns %.4f (was %.4f)\n", m.describe(), m.gain, sta.wns, old_wns);
+					log("         rejected: %s (est. gain %.4f) -> wns %.4f (was %.4f)\n", m.describe(), m.gain, sta.wns, ref.wns);
 				reject(m);
 			}
 			undo(m);
@@ -734,18 +775,16 @@ struct Sizer {
 					std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() > opt.max_time)
 				break;
 
-			double old_wns = sta.wns;
-			double win = std::max(0.02, 0.03 * (sta.opt.period - sta.wns));
-			double thr = old_wns + win;
-			double old_cost = near_critical_cost(thr);
+			best_wns = std::max(best_wns, sta.wns);
+			Ref ref = reference();
 			std::vector<Move> seq;
 
 			// single moves first, then sequences of up to three moves
 			ignore_rejected = false;
-			bool accepted = search(0, 16, old_wns, old_cost, thr, seq);
+			bool accepted = search(0, 16, ref, seq);
 			if (!accepted && opt.lookahead > 0) {
 				ignore_rejected = true;
-				accepted = search(opt.lookahead, 6, old_wns, old_cost, thr, seq);
+				accepted = search(opt.lookahead, 6, ref, seq);
 				ignore_rejected = false;
 				if (accepted) {
 					rejected_resize.clear();

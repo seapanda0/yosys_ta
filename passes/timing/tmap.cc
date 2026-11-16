@@ -32,32 +32,36 @@ struct ArchVariant {
 	const char *descr;
 	const char *script;
 	int effort;       // minimum effort level at which the variant is explored
-	bool needs_mul;   // only useful for designs with multipliers
+	int mul;          // +1: only for designs with multipliers, -1: only for designs without (see below)
 	bool period_only; // only explored if there is a clock period to meet
 };
 
 // The common tail of all front-end variants ({TECHMAP} is replaced).
 static const char *arch_tail =
 	"share; opt; memory -nomap; opt_clean; opt -fast -full; memory_map; opt -full; "
-	"{TECHMAP}; opt -fast; abc; opt -fast";
+	"{TECHMAP}; opt -fast{PREOPT}";
 
+// Parallel prefix adders in the rows of an array multiplier are large and
+// highly redundant. For designs with multipliers the prefix adder variants
+// are therefore only explored in combination with Booth multipliers (unless
+// selected with -arch).
 static const std::vector<ArchVariant> arch_variants = {
 	{"default", "Brent-Kung adders, array multipliers (same as 'synth')",
-		"alumacc; {TAIL:techmap}", 0, false, false},
+		"alumacc; {TAIL:techmap}", 0, 0, false},
 	{"ks", "Kogge-Stone adders",
-		"alumacc; {TAIL:techmap -map +/techmap.v -map +/choices/kogge-stone.v}", 1, false, false},
+		"alumacc; {TAIL:techmap -map +/techmap.v -map +/choices/kogge-stone.v}", 1, -1, false},
 	{"booth_ks", "Booth multipliers, Kogge-Stone adders",
-		"booth; alumacc; {TAIL:techmap -map +/techmap.v -map +/choices/kogge-stone.v}", 1, true, false},
+		"booth; alumacc; {TAIL:techmap -map +/techmap.v -map +/choices/kogge-stone.v}", 1, 1, false},
 	{"ripple", "ripple-carry adders",
-		"alumacc; {TAIL:techmap -map +/techmap.v -map +/choices/ripple.v}", 1, false, true},
+		"alumacc; {TAIL:techmap -map +/techmap.v -map +/choices/ripple.v}", 1, 0, true},
 	{"booth", "Booth multipliers, Brent-Kung adders",
-		"booth; alumacc; {TAIL:techmap}", 2, true, false},
-	{"csa", "carry-save adder trees for adder chains and multipliers, Kogge-Stone final adders",
-		"alumacc; arith_tree; {TAIL:techmap -map +/techmap.v -map +/choices/kogge-stone.v}", 2, false, false},
+		"booth; alumacc; {TAIL:techmap}", 2, 1, false},
 	{"sklansky", "Sklansky adders",
-		"alumacc; {TAIL:techmap -map +/techmap.v -map +/choices/sklansky.v}", 2, false, false},
+		"alumacc; {TAIL:techmap -map +/techmap.v -map +/choices/sklansky.v}", 2, -1, false},
 	{"hc", "Han-Carlson adders",
-		"alumacc; {TAIL:techmap -map +/techmap.v -map +/choices/han-carlson.v}", 2, false, false},
+		"alumacc; {TAIL:techmap -map +/techmap.v -map +/choices/han-carlson.v}", 2, -1, false},
+	{"booth_sklansky", "Booth multipliers, Sklansky adders",
+		"booth; alumacc; {TAIL:techmap -map +/techmap.v -map +/choices/sklansky.v}", 2, 1, false},
 };
 
 // A mapping recipe: an ABC script and the options for reading the library.
@@ -199,7 +203,11 @@ struct TmapPass : public Pass {
 		return s;
 	}
 
-	static std::string expand_arch(const std::string &script)
+	// The gate level netlist is cleaned up with the default script of the
+	// 'abc' command before it is mapped. Its functional reduction step
+	// (&fraig) does not terminate in reasonable time on wide multipliers, so
+	// designs with multipliers get a script without it.
+	static std::string expand_arch(const std::string &script, bool has_mul)
 	{
 		std::string s = script;
 		size_t pos = s.find("{TAIL:");
@@ -207,7 +215,9 @@ struct TmapPass : public Pass {
 			return s;
 		size_t end = s.find('}', pos);
 		std::string techmap = s.substr(pos + 6, end - pos - 6);
-		return s.substr(0, pos) + replace_all(arch_tail, "{TECHMAP}", techmap) + s.substr(end + 1);
+		std::string tail = replace_all(arch_tail, "{TECHMAP}", techmap);
+		tail = replace_all(tail, "{PREOPT}", has_mul ? "; abc -script +strash;dc2;strash;&get,-n;&dch,-f;&nf;&put; opt -fast" : "; abc; opt -fast");
+		return s.substr(0, pos) + tail + s.substr(end + 1);
 	}
 
 	std::vector<std::string> lib_args(const char *cmd)
@@ -283,13 +293,16 @@ struct TmapPass : public Pass {
 	}
 
 	// bit-blast a copy of the module with the given architecture variant and map the flip-flops
-	RTLIL::Module *make_front(RTLIL::Design *design, RTLIL::Module *src, const ArchVariant *arch)
+	RTLIL::Module *make_front(RTLIL::Design *design, RTLIL::Module *src, const ArchVariant *arch, bool has_mul)
 	{
 		RTLIL::Module *m = src->clone(design, design->twines().add(stringf("\\__tmap_%d_front_%s", cand_counter++, arch->name)));
 		log_header(design, "Timing driven mapping: architecture variant '%s'.\n", arch->name);
 		log_push();
-		for (auto &cmd : split_tokens(expand_arch(arch->script), ";"))
-			Pass::call_on_module(design, m, cmd);
+		// commands are separated by "; " (an inline ABC script contains ';' without blanks)
+		std::string script = expand_arch(arch->script, has_mul) + "; ";
+		for (size_t pos = 0, end; (end = script.find("; ", pos)) != std::string::npos; pos = end + 2)
+			if (end > pos)
+				Pass::call_on_module(design, m, script.substr(pos, end - pos));
 		Pass::call_on_module(design, m, lib_args("dfflibmap"));
 		log_pop();
 		return m;
@@ -432,8 +445,8 @@ struct TmapPass : public Pass {
 
 			// architecture variants
 			std::vector<const ArchVariant *> archs;
+			bool has_mul = false;
 			if (!gates) {
-				bool has_mul = false;
 				for (auto cell : module->cells())
 					if (cell->type.in(ID($mul), ID($macc), ID($macc_v2)))
 						has_mul = true;
@@ -448,7 +461,7 @@ struct TmapPass : public Pass {
 					}
 				} else {
 					for (auto &a : arch_variants)
-						if (a.effort <= effort && (has_mul || !a.needs_mul) && (have_period || !a.period_only))
+						if (a.effort <= effort && (a.mul == 0 || (a.mul > 0) == has_mul) && (have_period || !a.period_only))
 							archs.push_back(&a);
 				}
 			}
@@ -477,7 +490,7 @@ struct TmapPass : public Pass {
 			} else if (!have_period) {
 				// speed: all architectures with the first recipe, then the other recipes on the best one
 				for (auto arch : archs) {
-					RTLIL::Module *front = make_front(design, module, arch);
+					RTLIL::Module *front = make_front(design, module, arch, has_mul);
 					if (consider(make_candidate(design, front, arch, &recipes[0], 0))) {
 						if (best_front != nullptr)
 							design->remove(best_front);
@@ -491,7 +504,7 @@ struct TmapPass : public Pass {
 			} else {
 				// clock period: all architectures with all recipes, mapped for the delay budget
 				for (auto arch : archs) {
-					RTLIL::Module *front = make_front(design, module, arch);
+					RTLIL::Module *front = make_front(design, module, arch, has_mul);
 					int d_ps = delay_budget(front);
 					bool keep = false;
 					for (auto &r : recipes)

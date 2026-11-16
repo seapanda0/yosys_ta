@@ -201,13 +201,13 @@ A candidate is an *architecture variant* combined with a *mapping recipe*.
 
 **Architecture variants** decide how arithmetic is bit-blasted before ABC sees it:
 
-| Variant | Adders | Multipliers |
-|---|---|---|
-| `default` | Brent-Kung (as `synth`) | array (as `synth`) |
-| `ks` | Kogge-Stone | array |
-| `booth_ks` | Kogge-Stone | Booth (only tried if the design has multipliers) |
-| `ripple` | ripple-carry (only tried with a clock period) | array |
-| `booth`, `csa`, `sklansky`, `hc` | further variants at `-effort 2` | |
+| Variant | Adders | Multipliers | Explored |
+|---|---|---|---|
+| `default` | Brent-Kung (as `synth`) | array (as `synth`) | always |
+| `ks` | Kogge-Stone | array | designs without multipliers |
+| `booth_ks` | Kogge-Stone | Booth | designs with multipliers |
+| `ripple` | ripple-carry | array | only with a clock period |
+| `booth`, `sklansky`, `hc`, `booth_sklansky` | | | at `-effort 2` |
 
 **Mapping recipes** are ABC scripts (`tmap -list` prints them). The speed recipes restructure the
 logic for delay (SOP balancing, `&if -g` / `if -g`), compute structural choices (`dch`) and map
