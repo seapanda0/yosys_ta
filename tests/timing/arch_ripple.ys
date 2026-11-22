@@ -1,0 +1,18 @@
+# The ripple carry $lcu implementation against the default one
+read_verilog <<EOT
+module top(input [8:0] a, b, input ci, output [9:0] add, sub, inc, output lt, output [4:0] narrow);
+  assign add = a + b + ci;
+  assign sub = a - b;
+  assign inc = a + 1'b1;
+  assign lt = $signed(a) < $signed(b);
+  assign narrow = a[3:0] + b[3:0];
+endmodule
+EOT
+hierarchy -top top
+proc
+opt
+alumacc
+opt
+equiv_opt -assert techmap -map +/techmap.v -map +/choices/ripple.v
+design -load postopt
+select -assert-none t:$alu t:$lcu %%
