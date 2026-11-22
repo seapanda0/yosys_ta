@@ -76,6 +76,7 @@ struct Pin {
 	bool comb_from = false; // has a combinational arc to some output
 	double cap[2] = {0, 0};
 	double max_cap = 0;
+	double max_tran = 0;
 	std::string function;
 };
 

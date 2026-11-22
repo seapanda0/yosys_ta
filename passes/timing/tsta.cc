@@ -69,8 +69,8 @@ struct TstaPass : public Pass {
 		log("delay tables of the library with lumped capacitive loads, and checks setup\n");
 		log("times against a single ideal clock.\n");
 		log("\n");
-		log("The results (wns, tns, min_period, area) are stored in the scratchpad as\n");
-		log("timing.result.<name>.\n");
+		log("The results (wns, tns, min_period, area, violations) are stored in the\n");
+		log("scratchpad as timing.result.<name>.\n");
 		log("\n");
 		log("    -paths <n>\n");
 		log("        print the <n> worst endpoints (default: 1). The full path is\n");
@@ -113,6 +113,12 @@ struct TstaPass : public Pass {
 			design->scratchpad_set_string("timing.result.wns", stringf("%.6f", sta.wns));
 			design->scratchpad_set_string("timing.result.tns", stringf("%.6f", sta.tns));
 			design->scratchpad_set_string("timing.result.min_period", stringf("%.6f", sta.min_period()));
+			int violations = 0;
+			for (int n = 0; n < GetSize(sta.nets); n++)
+				if (sta.limit_excess(n, sta.default_max_tran()) > 0)
+					violations++;
+			log("%d nets violate a capacitance or transition limit.\n", violations);
+			design->scratchpad_set_string("timing.result.violations", stringf("%d", violations));
 			design->scratchpad_set_string("timing.result.area", stringf("%.6f", sta.area()));
 			if (quiet || sta.worst_endpoint < 0)
 				continue;
@@ -124,7 +130,7 @@ struct TstaPass : public Pass {
 						sta.insts[we.inst].lc->name, sta.insts[we.inst].lc->pins[we.pin].name,
 						sta.preq(we.inst, we.pin, we.rf), we.slack);
 			else
-				log("  endpoint: primary output, required %.4f, slack %.4f\n", sta.opt.period - sta.opt.output_delay, we.slack);
+				log("  endpoint: primary output, required %.4f, slack %.4f\n", sta.capture_time() - sta.opt.output_delay, we.slack);
 			if (n_paths > 1) {
 				std::vector<int> idx(sta.endpoints.size());
 				for (int i = 0; i < GetSize(idx); i++)

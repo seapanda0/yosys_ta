@@ -53,6 +53,9 @@ struct TsizePass : public Pass {
 		log("     a full timing update confirms that it improves the design.\n");
 		log("  3. area: cells are downsized as far as their slack allows.\n");
 		log("\n");
+		log("Cells with the 'keep' attribute are never resized. No move is accepted that\n");
+		log("adds a violation of an electrical limit.\n");
+		log("\n");
 		log("    -max_iter <n>\n");
 		log("        maximum number of accepted moves in the timing phase\n");
 		log("\n");

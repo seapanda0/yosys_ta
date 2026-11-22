@@ -117,7 +117,11 @@ struct SynthTimingPass : public ScriptPass {
 				continue;
 			}
 			if (timing_args.count(args[argidx]) && argidx + 1 < args.size()) {
-				timing_opts += " " + args[argidx] + " " + args[argidx + 1];
+				std::string value = args[argidx + 1];
+				// run() tokenizes the command again
+				if (value.find(' ') != std::string::npos && value.front() != '"')
+					value = "\"" + value + "\"";
+				timing_opts += " " + args[argidx] + " " + value;
 				argidx++;
 				continue;
 			}

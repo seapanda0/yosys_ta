@@ -1,0 +1,16 @@
+# A driver far over its limits: sizing has to leave no violation behind
+read_verilog <<EOT
+module top(input clk, a, output [99:0] y);
+  wire q, n;
+  DFF_X1 f0 (.CK(clk), .D(a), .Q(q));
+  INV_X1 g (.A(q), .Y(n));
+  genvar i;
+  generate for (i = 0; i < 100; i = i + 1) begin : b
+    INV_X1 h (.A(n), .Y(y[i]));
+  end endgenerate
+endmodule
+EOT
+timing_setup -liberty timing.lib
+tsize
+tsta
+scratchpad -assert timing.result.violations 0

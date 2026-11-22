@@ -194,8 +194,62 @@ struct Loader {
 		return t;
 	}
 
+	static std::string serialize(const LibertyAst *ast)
+	{
+		std::string s = ast->id + "(";
+		for (auto &arg : ast->args)
+			s += arg + ",";
+		s += ")=" + ast->value + "{";
+		for (auto child : ast->children)
+			s += serialize(child) + ";";
+		return s + "}";
+	}
+
+	// Everything besides pin names and functions that has to match before one
+	// cell may replace another. The footprint alone is not sufficient: flip-flops
+	// of both clock edges can share one.
+	static std::string behavior(const LibertyAst *ast, const Cell &cell)
+	{
+		std::string s;
+		for (auto child : ast->children) {
+			if (child->id == "ff" || child->id == "ff_bank" || child->id == "latch" || child->id == "latch_bank" ||
+					child->id == "statetable" || child->id == "clock_gating_integrated_cell")
+				s += serialize(child);
+			if (child->id == "pin")
+				for (auto attr : child->children)
+					if (attr->id == "three_state" || attr->id == "state_function" || attr->id == "internal_node")
+						s += child->args.empty() ? serialize(attr) : child->args[0] + serialize(attr);
+		}
+		std::set<std::string> edges;
+		for (auto arcs : {&cell.arcs, &cell.checks})
+			for (auto &arc : *arcs)
+				if (arc.type != Arc::COMB)
+					edges.insert(stringf("%d:%d:%d:%d", int(arc.type), arc.from, arc.to, int(arc.falling_clock)));
+		for (auto &edge : edges)
+			s += edge;
+		return s;
+	}
+
+	// pins that are not modeled (buses, inouts) rule out substitution
+	static bool fully_modeled(const LibertyAst *ast)
+	{
+		for (auto child : ast->children) {
+			if (child->id == "bus" || child->id == "bundle")
+				return false;
+			if (child->id == "pin")
+				if (auto dir = child->find("direction"))
+					if (dir->value == "inout")
+						return false;
+		}
+		return true;
+	}
+
 	void parse_cell(const LibertyAst *ast, const std::vector<std::string> &dont_use)
 	{
+		// the first definition of a cell wins
+		if (lib.cells.count(ast->args[0]))
+			return;
+		bool substitutable = fully_modeled(ast);
 		auto cell = std::make_unique<Cell>();
 		cell->name = ast->args[0];
 		if (auto n = ast->find("area"))
@@ -234,6 +288,8 @@ struct Loader {
 					pin.cap[FALL] = atof(n->value.c_str()) * cap_scale;
 				if (auto n = child->find("max_capacitance"))
 					pin.max_cap = atof(n->value.c_str()) * cap_scale;
+				if (auto n = child->find("max_transition"))
+					pin.max_tran = atof(n->value.c_str()) * time_scale;
 				if (auto n = child->find("function"))
 					pin.function = n->value;
 				cell->pin_idx[pin.name] = GetSize(cell->pins);
@@ -311,7 +367,7 @@ struct Loader {
 			if (cell->pins[i].output)
 				n_out++, out_idx = i;
 		}
-		if (!cell->seq && n_in == 1 && n_out == 1) {
+		if (substitutable && !cell->seq && n_in == 1 && n_out == 1) {
 			std::string f;
 			for (char c : cell->pins[out_idx].function)
 				if (c != ' ' && c != '(' && c != ')' && c != '"')
@@ -339,8 +395,8 @@ struct Loader {
 		std::string footprint;
 		if (auto n = ast->find("cell_footprint"))
 			footprint = n->value;
-		if (!footprint.empty() && cell->drive_res > 0) {
-			std::string key = footprint;
+		if (substitutable && !footprint.empty() && cell->drive_res > 0) {
+			std::string key = footprint + behavior(ast, *cell);
 			for (auto &pin : cell->pins)
 				key += stringf("|%s:%d:%s", pin.name, pin.input ? 0 : 1, pin.function);
 			if (!family_of.count(key)) {
@@ -351,8 +407,6 @@ struct Loader {
 			lib.families[cell->family].push_back(cell.get());
 		}
 
-		if (lib.cells.count(cell->name))
-			return;
 		lib.cells[cell->name] = cell.get();
 		lib.cell_store.push_back(std::move(cell));
 	}

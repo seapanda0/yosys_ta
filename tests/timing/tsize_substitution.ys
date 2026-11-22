@@ -1,0 +1,31 @@
+# Sizing must not change the clock edge of a flip-flop: in this library DFF_X2
+# is a faster falling edge flip-flop with the footprint and pins of DFF_X1.
+read_verilog <<EOT
+module top(input clk, a, b, output y);
+  wire q, n1, n2;
+  DFF_X1 f0 (.CK(clk), .D(a), .Q(q));
+  NAND2_X1 g1 (.A(q), .B(b), .Y(n1));
+  NAND2_X1 g2 (.A(q), .B(n1), .Y(n2));
+  NAND2_X1 g3 (.A(q), .B(n2), .Y(y));
+endmodule
+EOT
+timing_setup -liberty "mixed edge.lib"
+tsize -selfcheck
+select -assert-count 1 t:DFF_X1
+select -assert-none t:DFF_X2
+
+# cells with the keep attribute are not resized
+design -reset
+read_verilog <<EOT
+module top(input clk, a, output [7:0] y);
+  wire q, n;
+  DFF_X1 f0 (.CK(clk), .D(a), .Q(q));
+  (* keep *) INV_X1 g (.A(q), .Y(n));
+  genvar i;
+  generate for (i = 0; i < 8; i = i + 1) begin : b
+    INV_X1 h (.A(n), .Y(y[i]));
+  end endgenerate
+endmodule
+EOT
+tsize -liberty timing.lib
+select -assert-count 1 c:g t:INV_X1 %i

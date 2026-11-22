@@ -120,7 +120,33 @@ struct Sizer {
 	Sizer(RTLIL::Module *module, const Library *lib, const StaOptions &sta_opt, const SizerOptions &opt)
 		: module(module), lib(lib), opt(opt), sta(module, lib, sta_opt)
 	{
-		max_tran = opt.max_tran > 0 ? opt.max_tran : (lib->default_max_tran > 0 ? lib->default_max_tran : 1.5);
+		max_tran = opt.max_tran > 0 ? opt.max_tran : sta.default_max_tran();
+	}
+
+	static bool fixed_cell(const RTLIL::Cell *cell)
+	{
+		return cell->get_bool_attribute(ID::keep);
+	}
+
+	bool resizable(const Inst &inst) const
+	{
+		return opt.resize && inst.lc->family >= 0 && !fixed_cell(inst.cell);
+	}
+
+	double total_excess()
+	{
+		double sum = 0;
+		for (int n = 0; n < GetSize(sta.nets); n++)
+			sum += sta.limit_excess(n, max_tran);
+		return sum;
+	}
+
+	bool touches_violation(int i)
+	{
+		for (int n : sta.insts[i].pin_net)
+			if (n >= 0 && sta.limit_excess(n, max_tran) > 0)
+				return true;
+		return false;
 	}
 
 	// ---- applying and undoing moves ----
@@ -370,7 +396,7 @@ struct Sizer {
 			// resize the driver of this path node
 			if (opt.resize && pn.inst >= 0) {
 				const Inst &inst = sta.insts[pn.inst];
-				if (inst.lc->family >= 0)
+				if (resizable(inst))
 					for (auto alt : lib->families[inst.lc->family]) {
 						if (alt == inst.lc || alt->dont_use || (!ignore_rejected && rejected_resize.count({inst.cell, alt})))
 							continue;
@@ -403,7 +429,7 @@ struct Sizer {
 					if (sink.first == next_inst)
 						continue;
 					const Inst &si = sta.insts[sink.first];
-					if (si.lc->family < 0 || si.lc->size_idx == 0)
+					if (!resizable(si) || si.lc->size_idx == 0)
 						continue;
 					const Cell *alt = lib->families[si.lc->family][si.lc->size_idx - 1];
 					if (alt->dont_use || (!ignore_rejected && rejected_resize.count({si.cell, alt})))
@@ -446,7 +472,7 @@ struct Sizer {
 					if (po_load > 1.5 * cin && eval_node(path, k, cin + sta.opt.wire_cap - po_load, arr, slew) &&
 							eval_comb(buf, buf->buf_in, buf->buf_out, rf, rf, slew, po_load, bd, bs) && bs <= max_tran) {
 						double g = net.arr[rf] - arr - next_stage_penalty(path, k, slew);
-						double po_slack = sta.opt.period - sta.opt.output_delay - (arr + bd);
+						double po_slack = sta.capture_time() - sta.opt.output_delay - (arr + bd);
 						if (g > min_gain && po_slack > sta.wns + g + 0.01) {
 							Move m;
 							m.kind = Move::BUFFER;
@@ -592,7 +618,7 @@ struct Sizer {
 
 	void repair()
 	{
-		for (int pass = 0; pass < 4; pass++) {
+		for (int pass = 0; pass < 10; pass++) {
 			int fixed = 0;
 			std::vector<Move> buf_moves;
 			for (int n = 0; n < GetSize(sta.nets); n++) {
@@ -602,14 +628,17 @@ struct Sizer {
 				Inst &drv = sta.insts[net.drv];
 				double load = std::max(net.load[RISE], net.load[FALL]);
 				double slew = std::max(net.slew[RISE], net.slew[FALL]);
-				double max_cap = drv.lc->pins[net.drv_pin].max_cap;
-				if ((max_cap <= 0 || load <= max_cap) && slew <= max_tran)
+				if (sta.limit_excess(n, max_tran) <= 0)
 					continue;
-				if (!net.timed(RISE) && !net.timed(FALL))
-					continue;
+				double tran_limit = max_tran;
+				if (drv.lc->pins[net.drv_pin].max_tran > 0)
+					tran_limit = std::min(tran_limit, drv.lc->pins[net.drv_pin].max_tran);
+				for (auto &sink : net.sinks)
+					if (sta.insts[sink.first].lc->pins[sink.second].max_tran > 0)
+						tran_limit = std::min(tran_limit, sta.insts[sink.first].lc->pins[sink.second].max_tran);
 				// try a stronger driver
 				bool ok = false;
-				if (opt.resize && drv.lc->family >= 0) {
+				if (resizable(drv)) {
 					auto &fam = lib->families[drv.lc->family];
 					for (int s = drv.lc->size_idx + 1; s < GetSize(fam) && !ok; s++) {
 						if (fam[s]->dont_use)
@@ -618,7 +647,7 @@ struct Sizer {
 						if (mc > 0 && load > mc)
 							continue;
 						// the slew scales roughly with the drive resistance
-						if (slew > max_tran && slew * fam[s]->drive_res / drv.lc->drive_res > max_tran)
+						if (slew > tran_limit && slew * fam[s]->drive_res / drv.lc->drive_res > tran_limit)
 							continue;
 						drv.cell->type = sta.type_id(fam[s]);
 						drv.lc = fam[s];
@@ -629,10 +658,29 @@ struct Sizer {
 					fixed++;
 					continue;
 				}
-				if (!opt.buffer || lib->buffers.empty() || GetSize(net.sinks) < 2)
+				if (!opt.buffer || lib->buffers.empty())
+					continue;
+				const Cell *buf = lib->buffers[GetSize(lib->buffers) / 2];
+				if (load <= 1.5 * buf->pins[buf->buf_in].cap[RISE])
+					continue;
+				if (GetSize(net.sinks) < 2 && net.n_po > 0) {
+					// the violation comes from the port load: decouple it
+					Move m;
+					m.kind = Move::BUFFER;
+					m.src = net.bit;
+					m.buf = buf;
+					m.drv_cell = drv.cell;
+					m.drv_port = sta.pin_id(drv.lc, net.drv_pin);
+					m.groups.emplace_back();
+					for (auto &sink : net.sinks)
+						m.groups.back().push_back({sta.insts[sink.first].cell, sta.pin_id(sta.insts[sink.first].lc, sink.second)});
+					buf_moves.push_back(m);
+					fixed++;
+					continue;
+				}
+				if (net.sinks.empty())
 					continue;
 				// split the sinks into groups, each driven by a buffer
-				const Cell *buf = lib->buffers[GetSize(lib->buffers) / 2];
 				double group_cap = buf->pins[buf->buf_out].max_cap > 0 ? buf->pins[buf->buf_out].max_cap / 3 : 0.05;
 				std::vector<std::pair<double, int>> sinks;
 				for (int si = 0; si < GetSize(net.sinks); si++)
@@ -685,17 +733,18 @@ struct Sizer {
 
 	// reference state for accepting moves
 	struct Ref {
-		double wns, cost, thr, tau, soft;
+		double wns, cost, thr, tau, soft, excess;
 	};
 
 	Ref reference()
 	{
 		Ref r;
 		r.wns = sta.wns;
-		r.thr = r.wns + std::max(0.02, 0.03 * (sta.opt.period - sta.wns));
+		r.thr = r.wns + std::max(0.02, 0.03 * (sta.capture_time() - sta.wns));
 		r.cost = near_critical_cost(r.thr);
-		r.tau = std::max(0.002, 0.004 * (sta.opt.period - sta.wns));
+		r.tau = std::max(0.002, 0.004 * (sta.capture_time() - sta.wns));
 		r.soft = soft_delay(r.tau);
+		r.excess = total_excess();
 		return r;
 	}
 
@@ -705,6 +754,12 @@ struct Sizer {
 	// such a move is also kept if it clearly reduces the smooth critical
 	// delay and WNS stays within a small tolerance of the best value seen.
 	bool improved(const Ref &r)
+	{
+		// speed is never bought with an electrical violation
+		return faster(r) && total_excess() <= r.excess + 1e-9;
+	}
+
+	bool faster(const Ref &r)
 	{
 		if (sta.wns > r.wns + 1e-6)
 			return true;
@@ -822,7 +877,7 @@ struct Sizer {
 	{
 		for (int pass = 0; pass < 8; pass++) {
 			double floor = sta.opt.period > 0 ? std::min(0.0, sta.wns) : sta.wns;
-			double margin = 0.01 * std::max(0.1, sta.opt.period - sta.wns);
+			double margin = 0.01 * std::max(0.1, sta.capture_time() - sta.wns);
 			std::vector<Move> batch;
 			std::vector<double> delta(sta.nets.size(), 0.0);
 			for (int i : sta.order) {
@@ -832,7 +887,7 @@ struct Sizer {
 					if (inst.lc->pins[p].comb_from && inst.pin_net[p] >= 0)
 						din = std::max(din, delta[inst.pin_net[p]]);
 				double own = 0;
-				if (inst.lc->family >= 0 && inst.lc->size_idx > 0) {
+				if (resizable(inst) && inst.lc->size_idx > 0) {
 					const Cell *alt = lib->families[inst.lc->family][inst.lc->size_idx - 1];
 					bool cap_ok = true;
 					for (int p = 0; p < GetSize(inst.lc->pins); p++)
@@ -859,15 +914,16 @@ struct Sizer {
 			}
 			if (batch.empty())
 				break;
+			double excess = total_excess();
 			resize_batch(batch, true);
 			int n_applied = GetSize(batch);
-			for (int round = 0; round < 20 && sta.wns < floor - 1e-6; round++) {
-				// revert the moves on violating paths
+			for (int round = 0; round < 20 && (sta.wns < floor - 1e-6 || total_excess() > excess + 1e-9); round++) {
+				// revert the moves on violating paths and nets
 				std::vector<Move> keep, revert;
 				bool last = round == 19;
 				for (auto &m : batch) {
 					int i = sta.inst_of.at(m.cell);
-					if (last || inst_slack(i) < floor + 0.5 * margin)
+					if (last || inst_slack(i) < floor + 0.5 * margin || touches_violation(i))
 						revert.push_back(m);
 					else
 						keep.push_back(m);
@@ -901,6 +957,14 @@ struct Sizer {
 		if (opt.area && opt.resize) {
 			area_phase();
 			sta.report_summary("  recovered: ");
+		}
+		if (opt.repair && total_excess() > 0) {
+			int n_repair = res.n_repair;
+			repair();
+			if (res.n_repair > n_repair) {
+				timing_phase();
+				sta.report_summary("  final:     ");
+			}
 		}
 		log("  %d cells resized, %d buffers inserted, %d cells downsized for area, %d limit violations repaired.\n",
 				res.n_resize, res.n_buffer, res.n_downsize, res.n_repair);

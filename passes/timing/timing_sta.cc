@@ -30,7 +30,7 @@ namespace Timing {
 
 void TimingConfig::load(RTLIL::Design *design)
 {
-	liberty_files = split_tokens(design->scratchpad_get_string("timing.liberty", ""), " ");
+	liberty_files = split_tokens(design->scratchpad_get_string("timing.liberty", ""), "\n");
 	dont_use = split_tokens(design->scratchpad_get_string("timing.dont_use", ""), " ");
 	auto num = [&](const char *key, double dflt) { return atof(design->scratchpad_get_string(key, stringf("%.12g", dflt)).c_str()); };
 	sta.period = num("timing.period", sta.period);
@@ -46,7 +46,7 @@ void TimingConfig::store(RTLIL::Design *design) const
 {
 	std::string libs, du;
 	for (auto &f : liberty_files)
-		libs += (libs.empty() ? "" : " ") + f;
+		libs += (libs.empty() ? "" : "\n") + f; // paths may contain spaces
 	for (auto &d : dont_use)
 		du += (du.empty() ? "" : " ") + d;
 	design->scratchpad_set_string("timing.liberty", libs);
@@ -115,7 +115,7 @@ std::string TimingConfig::args() const
 {
 	std::string s;
 	for (auto &f : liberty_files)
-		s += stringf(" -liberty %s", f);
+		s += stringf(" -liberty \"%s\"", f);
 	for (auto &d : dont_use)
 		s += stringf(" -dont_use %s", d);
 	s += stringf(" -period %.12g -input_delay %.12g -output_delay %.12g -load %.12g -input_slew %.12g -clock_slew %.12g -wire_cap %.12g",
@@ -288,6 +288,25 @@ void Sta::build()
 				break;
 			}
 	}
+	half_cycle = false;
+	for (auto &inst : insts)
+		for (auto arcs : {&inst.lc->arcs, &inst.lc->checks})
+			for (auto &arc : *arcs)
+				if (arc.type != Arc::COMB && arc.falling_clock && inst.pin_net[arc.from] >= 0)
+					half_cycle = true;
+	if (half_cycle && !warned_half_cycle) {
+		log_warning("Module %s has cells that use the falling clock edge: all paths are constrained to half a clock period.\n", log_id(module));
+		warned_half_cycle = true;
+	}
+	if (!quiet) {
+		int n_clocks = 0;
+		for (auto &net : nets)
+			if (net.clock)
+				n_clocks++;
+		if (n_clocks > 1)
+			log_warning("Module %s has %d clock nets: they are timed as one ideal clock.\n", log_id(module), n_clocks);
+	}
+
 	topo_pos.assign(insts.size(), 0);
 	for (int k = 0; k < GetSize(order); k++)
 		topo_pos[order[k]] = k;
@@ -391,7 +410,7 @@ void Sta::eval_inst_req(int i)
 		for (int rf = 0; rf < 2; rf++) {
 			if (!chk.constraint[rf].valid() || !dn.timed(rf))
 				continue;
-			double r = opt.period - chk.constraint[rf].lookup(opt.clock_slew, 0, dn.slew[rf]);
+			double r = capture_time() - chk.constraint[rf].lookup(opt.clock_slew, 0, dn.slew[rf]);
 			double &pr = preq(i, chk.to, rf);
 			pr = std::min(pr, r);
 		}
@@ -429,7 +448,7 @@ void Sta::eval_net_req(int n)
 	for (int rf = 0; rf < 2; rf++) {
 		double r = POS_INF;
 		if (net.n_po > 0 && net.timed(rf))
-			r = opt.period - opt.output_delay;
+			r = capture_time() - opt.output_delay;
 		for (auto &s : net.sinks)
 			r = std::min(r, preq(s.first, s.second, rf));
 		net.req[rf] = r;
@@ -444,8 +463,8 @@ void Sta::eval_endpoint(int e)
 	ep.rf = 0;
 	if (ep.inst < 0) {
 		for (int rf = 0; rf < 2; rf++)
-			if (net.timed(rf) && opt.period - opt.output_delay - net.arr[rf] < ep.slack) {
-				ep.slack = opt.period - opt.output_delay - net.arr[rf];
+			if (net.timed(rf) && capture_time() - opt.output_delay - net.arr[rf] < ep.slack) {
+				ep.slack = capture_time() - opt.output_delay - net.arr[rf];
 				ep.rf = rf;
 			}
 		return;
@@ -459,7 +478,7 @@ void Sta::eval_endpoint(int e)
 		for (int rf = 0; rf < 2; rf++) {
 			if (!chk.constraint[rf].valid() || !net.timed(rf))
 				continue;
-			double r = opt.period - chk.constraint[rf].lookup(opt.clock_slew, 0, net.slew[rf]);
+			double r = capture_time() - chk.constraint[rf].lookup(opt.clock_slew, 0, net.slew[rf]);
 			if (r - net.arr[rf] < ep.slack) {
 				ep.slack = r - net.arr[rf];
 				ep.rf = rf;
@@ -482,7 +501,7 @@ void Sta::summarize()
 			tns += endpoints[e].slack;
 	}
 	if (worst_endpoint < 0)
-		wns = opt.period;
+		wns = capture_time();
 }
 
 void Sta::propagate()
@@ -636,6 +655,28 @@ void Sta::update(const std::vector<int> &changed)
 		for (int e : net_eps[n])
 			eval_endpoint(e);
 	summarize();
+}
+
+double Sta::limit_excess(int n, double max_tran) const
+{
+	const Net &net = nets[n];
+	if (net.drv < 0 || net.clock)
+		return 0;
+	const Pin &out = insts[net.drv].lc->pins[net.drv_pin];
+	double excess = 0;
+	if (out.max_cap > 0)
+		excess += std::max(0.0, std::max(net.load[RISE], net.load[FALL]) / out.max_cap - 1);
+	if (!net.timed(RISE) && !net.timed(FALL))
+		return excess;
+	double limit = max_tran;
+	if (out.max_tran > 0)
+		limit = std::min(limit, out.max_tran);
+	for (auto &sink : net.sinks) {
+		double pin_limit = insts[sink.first].lc->pins[sink.second].max_tran;
+		if (pin_limit > 0)
+			limit = std::min(limit, pin_limit);
+	}
+	return excess + std::max(0.0, std::max(net.slew[RISE], net.slew[FALL]) / limit - 1);
 }
 
 double Sta::area() const

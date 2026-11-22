@@ -237,6 +237,7 @@ struct TmapPass : public Pass {
 		if (cfg.sta.period <= 0)
 			return 0;
 		double overhead = 0;
+		bool half_cycle = false;
 		pool<IdString> seen;
 		for (auto cell : module->cells()) {
 			if (seen.count(cell->type))
@@ -245,6 +246,10 @@ struct TmapPass : public Pass {
 			auto lc = lib->find(cell->type.unescape());
 			if (lc == nullptr || !lc->seq)
 				continue;
+			for (auto arcs : {&lc->arcs, &lc->checks})
+				for (auto &arc : *arcs)
+					if (arc.type != Timing::Arc::COMB && arc.falling_clock)
+						half_cycle = true;
 			double clk2q = 0, setup = 0;
 			for (auto &arc : lc->arcs)
 				if (arc.type == Timing::Arc::CLK)
@@ -257,7 +262,7 @@ struct TmapPass : public Pass {
 						setup = std::max(setup, chk.constraint[rf].lookup(cfg.sta.clock_slew, 0, 0.1));
 			overhead = std::max(overhead, clk2q + setup);
 		}
-		return std::max(1, int((cfg.sta.period - overhead) * 1000));
+		return std::max(1, int(((half_cycle ? 0.5 : 1.0) * cfg.sta.period - overhead) * 1000));
 	}
 
 	std::vector<std::string> abc_command(const MapRecipe &recipe, int d_ps)

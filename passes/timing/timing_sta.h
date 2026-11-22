@@ -131,6 +131,13 @@ struct Sta {
 	int n_pins = 0;
 	bool quiet = false;
 
+	// Only one arrival time is kept per net, so the launching edge of a path is
+	// unknown. If any sequential cell uses the falling edge, every path has to
+	// fit into half a period: exact for paths between opposite edges and
+	// pessimistic for all others, but never optimistic.
+	bool half_cycle = false;
+	bool warned_half_cycle = false;
+
 	double wns = 0, tns = 0;
 	int worst_endpoint = -1;
 
@@ -161,7 +168,11 @@ struct Sta {
 		return s;
 	}
 
-	double min_period() const { return opt.period - wns; }
+	double capture_time() const { return half_cycle ? 0.5 * opt.period : opt.period; }
+	double min_period() const { return opt.period - (half_cycle ? 2 : 1) * wns; }
+	// electrical limits (max_capacitance, max_transition)
+	double limit_excess(int net, double max_tran) const;
+	double default_max_tran() const { return lib->default_max_tran > 0 ? lib->default_max_tran : 1.5; }
 	double area() const;
 	std::vector<PathNode> trace(int net, int rf) const;
 	std::vector<PathNode> worst_path() const;

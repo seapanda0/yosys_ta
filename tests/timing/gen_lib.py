@@ -83,3 +83,10 @@ for x, a in ((1, 5.0), (2, 6.5)):
     out += dff("DFF_X%d" % x, a, 5.0 / x)
 out += '}\n'
 open("timing.lib", "w").write(out)
+
+# DFF_X2 becomes a negative edge flip-flop that still has the footprint and pins of DFF_X1.
+# The space in the file name is intended (paths with spaces have to work).
+a = out.index("cell (DFF_X2)")
+neg = out[a:].replace('clocked_on : "CK"', 'clocked_on : "!CK"')
+neg = neg.replace("rising_edge", "falling_edge").replace("setup_rising", "setup_falling")
+open("mixed edge.lib", "w").write(out[:a] + neg)
