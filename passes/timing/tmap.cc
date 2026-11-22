@@ -238,6 +238,22 @@ struct TmapPass : public Pass {
 			return 0;
 		double overhead = 0;
 		bool half_cycle = false;
+		// falling edge flip-flops are mapped to rising edge cells behind an inverter
+		SigMap sigmap(module);
+		pool<SigBit> inverted;
+		for (auto cell : module->cells())
+			if (cell->type == ID($_NOT_))
+				inverted.insert(sigmap(cell->getPort(ID::Y).as_bit()));
+		for (auto cell : module->cells()) {
+			auto lc = lib->find(cell->type.unescape());
+			if (lc == nullptr || !lc->seq)
+				continue;
+			for (auto &conn : cell->connections()) {
+				int p = lc->pin(module->design->twines().unescaped_str(conn.first));
+				if (p >= 0 && lc->pins[p].clock && GetSize(conn.second) == 1 && inverted.count(sigmap(conn.second.as_bit())))
+					half_cycle = true;
+			}
+		}
 		pool<IdString> seen;
 		for (auto cell : module->cells()) {
 			if (seen.count(cell->type))

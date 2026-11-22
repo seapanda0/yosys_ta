@@ -289,6 +289,7 @@ void Sta::build()
 			}
 	}
 	half_cycle = false;
+	int n_clocks = trace_clocks();
 	for (auto &inst : insts)
 		for (auto arcs : {&inst.lc->arcs, &inst.lc->checks})
 			for (auto &arc : *arcs)
@@ -298,14 +299,8 @@ void Sta::build()
 		log_warning("Module %s has cells that use the falling clock edge: all paths are constrained to half a clock period.\n", log_id(module));
 		warned_half_cycle = true;
 	}
-	if (!quiet) {
-		int n_clocks = 0;
-		for (auto &net : nets)
-			if (net.clock)
-				n_clocks++;
-		if (n_clocks > 1)
-			log_warning("Module %s has %d clock nets: they are timed as one ideal clock.\n", log_id(module), n_clocks);
-	}
+	if (!quiet && n_clocks > 1)
+		log_warning("Module %s has %d clocks: they are timed as one ideal clock.\n", log_id(module), n_clocks);
 
 	topo_pos.assign(insts.size(), 0);
 	for (int k = 0; k < GetSize(order); k++)
@@ -502,6 +497,66 @@ void Sta::summarize()
 	}
 	if (worst_endpoint < 0)
 		wns = capture_time();
+}
+
+// Follows the clock nets back to their sources and marks the clock network.
+// A clock that may be inverted (inverter, logic that is not known to preserve
+// the polarity) counts as a falling edge clock: dfflibmap maps falling edge
+// flip-flops to rising edge cells behind an inverter. Returns the number of
+// clock sources.
+int Sta::trace_clocks()
+{
+	std::vector<char> visited(nets.size(), 0);
+	std::vector<int> todo;
+	int n_sources = 0;
+	for (int n = 0; n < GetSize(nets); n++)
+		if (nets[n].clock)
+			todo.push_back(n);
+	while (!todo.empty()) {
+		int n = todo.back();
+		todo.pop_back();
+		if (visited[n])
+			continue;
+		visited[n] = 1;
+		nets[n].clock = true;
+		int d = nets[n].drv;
+		if (d < 0 || insts[d].lc->seq) {
+			// a clock gate passes the clock of its clock pin through
+			int from = -1;
+			if (d >= 0)
+				for (auto &arc : insts[d].lc->arcs)
+					if (arc.type == Arc::COMB && arc.to == nets[n].drv_pin && insts[d].lc->pins[arc.from].clock) {
+						from = insts[d].pin_net[arc.from];
+						if (arc.sense != Arc::POS)
+							half_cycle = true;
+					}
+			if (from >= 0)
+				todo.push_back(from);
+			else
+				n_sources++;
+			continue;
+		}
+		const Inst &inst = insts[d];
+		pool<int> inputs;
+		bool positive = true;
+		for (auto &arc : inst.lc->arcs) {
+			if (arc.type != Arc::COMB || arc.to != nets[n].drv_pin || inst.pin_net[arc.from] < 0)
+				continue;
+			inputs.insert(inst.pin_net[arc.from]);
+			if (arc.sense != Arc::POS)
+				positive = false;
+		}
+		if (!positive)
+			half_cycle = true;
+		if (GetSize(inputs) == 1)
+			todo.push_back(*inputs.begin());
+		else {
+			// gated or multiplexed: the edge of the data inputs is unknown
+			n_sources++;
+			half_cycle = true;
+		}
+	}
+	return n_sources;
 }
 
 void Sta::propagate()

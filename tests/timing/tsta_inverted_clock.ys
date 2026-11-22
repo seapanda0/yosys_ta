@@ -1,0 +1,17 @@
+# A rising edge flip-flop behind a clock inverter captures on the falling edge
+read_verilog <<EOT
+module top(input clk, a, output y);
+  wire q, n, clkn;
+  DFF_X1 f0 (.CK(clk), .D(a), .Q(q));
+  INV_X1 g (.A(q), .Y(n));
+  INV_X1 ci (.A(clk), .Y(clkn));
+  DFF_X1 f1 (.CK(clkn), .D(n), .Q(y));
+endmodule
+EOT
+
+# the same path as in tsta_edges.ys
+logger -expect warning "falling clock edge" 1
+tsta -liberty timing.lib -period 0.5 -load 0
+scratchpad -assert timing.result.wns -0.099300
+scratchpad -assert timing.result.min_period 0.698600
+logger -check-expected

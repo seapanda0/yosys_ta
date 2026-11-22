@@ -154,6 +154,7 @@ struct Sta {
 	void eval_inst_req(int i);
 	void eval_net_req(int n);
 	void eval_endpoint(int e);
+	int trace_clocks();
 	void summarize();
 
 	double &preq(int inst, int pin, int rf) { return pin_req[(insts[inst].pin_base + pin) * 2 + rf]; }
