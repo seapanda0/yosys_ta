@@ -1,0 +1,7 @@
+flow/generated/
+runs/
+results/
+snap/
+study/
+verify/work/
+verify/formal/
