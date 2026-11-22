@@ -18,6 +18,7 @@
  */
 
 #include "passes/timing/timing_sta.h"
+#include <cmath>
 #include <queue>
 
 YOSYS_NAMESPACE_BEGIN
@@ -60,6 +61,16 @@ void TimingConfig::store(RTLIL::Design *design) const
 	design->scratchpad_set_string("timing.wire_cap", stringf("%.12g", sta.wire_cap * 1e3));
 }
 
+static double number(const std::string &arg, const std::string &val, bool may_be_negative)
+{
+	char *end;
+	double v = strtod(val.c_str(), &end);
+	// a wrong period would silently turn into "optimize for speed"
+	if (val.empty() || *end != 0 || !std::isfinite(v) || (!may_be_negative && v < 0))
+		log_cmd_error("Invalid value '%s' for %s, expected a %snumber without a unit.\n", val, arg, may_be_negative ? "" : "non-negative ");
+	return v;
+}
+
 bool TimingConfig::parse_arg(const std::vector<std::string> &args, size_t &argidx)
 {
 	if (argidx + 1 >= args.size())
@@ -85,19 +96,19 @@ bool TimingConfig::parse_arg(const std::vector<std::string> &args, size_t &argid
 		dont_use_from_args = true;
 		dont_use.push_back(val);
 	} else if (arg == "-period")
-		sta.period = atof(val.c_str());
+		sta.period = number(arg, val, false);
 	else if (arg == "-input_delay")
-		sta.input_delay = atof(val.c_str());
+		sta.input_delay = number(arg, val, true);
 	else if (arg == "-output_delay")
-		sta.output_delay = atof(val.c_str());
+		sta.output_delay = number(arg, val, true);
 	else if (arg == "-load")
-		sta.output_load = atof(val.c_str()) * 1e-3;
+		sta.output_load = number(arg, val, false) * 1e-3;
 	else if (arg == "-input_slew")
-		sta.input_slew = atof(val.c_str());
+		sta.input_slew = number(arg, val, false);
 	else if (arg == "-clock_slew")
-		sta.clock_slew = atof(val.c_str());
+		sta.clock_slew = number(arg, val, false);
 	else if (arg == "-wire_cap")
-		sta.wire_cap = atof(val.c_str()) * 1e-3;
+		sta.wire_cap = number(arg, val, false) * 1e-3;
 	else
 		return false;
 	argidx++;

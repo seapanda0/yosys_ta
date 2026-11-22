@@ -18,8 +18,8 @@ what this flow actually does with timing explains most of the results below.
    minimises the number of logic levels: an inverter, an XOR and a 5-input AOI all cost the same.
 2. **The delay target is meaningless in that model.** `abc -D <picoseconds>` passes the target to
    `&nf`, which compares it with a delay measured in gate levels. A target of 5000 means "5000
-   levels are fine", so the mapper only recovers area. With `-D` set to the clock period, as the
-   documentation suggests, a 32-bit adder is mapped to a ripple-carry chain of majority gates.
+   levels are fine", so the mapper only recovers area. With `-D` set to a clock period of a few
+   thousand picoseconds, the 32-bit adder of picorv32 comes out as a chain of majority gates.
 3. **There is no timing analysis in the loop.** Nothing measures the netlist that comes back from
    ABC. The sizing commands that ABC runs afterwards (`upsize`, `dnsize`) know nothing about the
    flip-flops, their clock-to-output delay, their setup time or their drive strength, because
@@ -126,13 +126,15 @@ options. `tmap -list` prints the architecture variants and mapping recipes.
 The liberty file is parsed with the existing Yosys liberty parser (`passes/techmap/libparse`),
 then converted into a compact timing view:
 
-* per pin: direction, rise/fall capacitance, `max_capacitance`, clock flag;
+* per pin: direction, rise/fall capacitance, `max_capacitance`, `max_transition`, clock flag;
 * per timing arc: sense (positive/negative/non-unate), type (combinational, clock-to-output,
   setup/recovery check) and the NLDM tables `cell_rise/fall`, `rise/fall_transition`,
   `rise/fall_constraint`, normalised to ns and pF. Lookups use bilinear interpolation and linear
   extrapolation outside of the table, like OpenSTA;
-* drive-strength *families*: cells with the same `cell_footprint`, pins and functions (e.g.
-  `nand2_1/2/4/8`), ordered by drive resistance. Sizing moves a cell within its family;
+* drive-strength *families*, ordered by drive resistance: cells with the same `cell_footprint`,
+  pins, functions *and sequential behavior* (`ff`/`latch`/`statetable` groups, clock edges,
+  three-state conditions). The footprint alone is not enough, flip-flops of both edges can share
+  one. Cells with buses or inout pins are never substituted. Sizing moves a cell within its family;
 * the list of usable buffers.
 
 Names are kept as plain strings because identifiers in this Yosys version belong to the name pool
@@ -162,8 +164,13 @@ affected instances in topological order as long as arrival times or slews change
 re-evaluates required times backwards as long as they change, and finally the endpoints on changed
 nets. `tsize -selfcheck` compares every incremental update against a full analysis.
 
-**Validation.** The numbers agree with OpenSTA (same liberty file, ideal clock, no parasitics) to
-the printed precision; see section 6.3.
+**Clock edges.** Only one arrival time is kept per net, so the launching edge of a path is not
+known. If a design uses the falling edge anywhere (a falling edge cell, a clock that goes through
+an inverter or through logic that may invert it), *every* path is constrained to half a period,
+with a warning. This is exact for paths between opposite edges and pessimistic for all others.
+`dfflibmap` produces such clock inverters for every `negedge` flip-flop.
+
+**Validation.** See section 6.
 
 ### 4.3 Timing driven sizing and buffering (`timing_optimize`, command `tsize`)
 
@@ -179,21 +186,28 @@ Three phases:
      slack;
    * *isolate*: move the sinks of a path net that have slack behind a buffer, so that the driver
      only sees the critical sinks;
-   * *buffer*: drive all sinks of a path net through a buffer (useful for weak drivers such as
-     flip-flops).
+   * *buffer*: drive all sinks of a path net through one or several parallel buffers (weak drivers
+     such as flip-flops, nets with very large fanout);
+   * *decouple*: drive a primary output through a buffer, so that its load is off the path.
 
    Each candidate gets a local estimate of the path delay gain (previous stage with the changed
    load, the cell itself with the changed input slew, next stage with the changed slew). The
    candidates are tried in order of estimated gain and the first one that an exact timing update
    confirms is kept: it has to improve WNS, or keep WNS and reduce the total negative slack of the
-   near-critical nets (this lets the optimizer work through sets of equally critical paths).
+   near-critical nets, or reduce a smooth maximum of all endpoint delays while WNS stays within a
+   small tolerance (designs like AES have hundreds of equally critical paths). It must not add a
+   capacitance or transition violation. If no single move qualifies, sequences of up to three moves
+   are tried (`-lookahead`).
    Rejected moves are undone. The phase ends when the period is met, or when no candidate for the
    worst path is accepted.
 3. **Area recovery.** Cells are moved to the next smaller size in batches: in topological order,
    each cell may consume slack only as far as the accumulated delay increase of its fanin still
    fits its own slack. The batch is verified with a timing update; moves on violating paths are
    reverted until the timing limit holds again. The limit is zero slack if a period is given, and
-   the achieved WNS otherwise.
+   the achieved WNS otherwise. Downsizing must not add limit violations either. A last repair
+   pass follows if any are left.
+
+Cells with the `keep` attribute are never resized.
 
 ### 4.4 Timing driven mapping (`tmap`)
 
@@ -218,6 +232,10 @@ buffering is left to `timing_optimize`, which also knows about the flip-flops.
 
 **Exploration.**
 
+Before mapping, the bit-blasted netlist is cleaned up with the default `abc` script. For designs
+with multipliers a script without `&fraig` is used, which does not finish in reasonable time on a
+32x32 Booth multiplier.
+
 * *No period:* all architecture variants are mapped with the first speed recipe; the remaining
   speed recipes are tried on the best architecture; the fastest candidate wins.
 * *With a period:* the delay budget of the logic (period minus clock-to-output delay and setup
@@ -237,14 +255,13 @@ on measured timing, not on the estimate of the mapper.
 
 ## 8. Limitations and future work
 
-* **Single ideal clock.** All sequential cells are assumed to be clocked by the same ideal clock;
-  designs with several clocks are timed as one synchronous domain. Falling-edge flip-flops are
-  treated like rising-edge ones, latches are not time-borrowed, and there are no hold checks,
-  false paths or multicycle paths. Constraints are given as command options (the build used here
-  has no Tcl, so the SDC reader of Yosys was not available).
+* **One ideal clock.** All clocks are timed as one synchronous domain (with a warning). There are
+  no hold checks, false paths, multicycle paths, generated clocks, or latch time borrowing.
+  Constraints are command options, SDC is not read.
+* **Mixed clock edges are pessimistic.** See section 4.2. A design with a single `negedge` register
+  is optimized as if it had half the period.
 * **Pre-layout timing.** Wires are either ignored or estimated with a capacitance per fanout.
-  Post-placement results (section 6.4) show that the gains carry over, but the absolute numbers
-  move.
+* **Inputs are ideal.** Primary inputs have no driver, so their nets are never buffered.
 * **Flat designs only.** `synth_timing` flattens the design.
 * **Global architecture choice.** One adder/multiplier architecture is chosen for the whole
   design. Choosing it per operator from the slack of the paths through it would save area at a
