@@ -1,0 +1,23 @@
+# tmap with a clock period that no candidate meets: all architecture variants
+# are also mapped with the speed recipes and no delay target, and the fastest
+# candidate is kept.
+read_verilog <<EOT
+module top(input clk, input [7:0] a, b, output reg [8:0] y);
+  reg [7:0] ar, br;
+  always @(posedge clk) begin
+    ar <= a;
+    br <= b;
+    y <= ar + br;
+  end
+endmodule
+EOT
+hierarchy -top top
+proc
+design -save gold
+
+# candidates mapped without a delay target have no '@<ps>' suffix
+logger -expect log "Candidate 'default/speed': " 1
+logger -expect log "Candidate 'ks/speed': " 1
+synth_timing -top top -liberty timing.lib -load 0 -period 0.1
+logger -check-expected
+select -assert-none t:$* %%

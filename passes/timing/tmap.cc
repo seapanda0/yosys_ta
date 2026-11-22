@@ -144,7 +144,9 @@ struct TmapPass : public Pass {
 		log("logic is passed to the mapper as delay target, so that area is recovered\n");
 		log("on paths with slack, and area oriented recipes and cheaper architectures\n");
 		log("are explored as well. Finally the delay target of the selected candidate\n");
-		log("is adjusted using the measured slack (see -refine).\n");
+		log("is adjusted using the measured slack (see -refine). If no candidate meets\n");
+		log("the period, all architecture variants are also mapped with all speed\n");
+		log("recipes and no delay target.\n");
 		log("\n");
 		log("The command expects flat modules in the coarse-grain representation that\n");
 		log("'synth -run begin:coarse' produces up to the 'peepopt' step, i.e. with\n");
@@ -558,6 +560,26 @@ struct TmapPass : public Pass {
 					bool c_meets = meets(c);
 					if (!consider(c) && (c_meets || !meets(best)))
 						break;
+				}
+			}
+
+			// No candidate meets the period: also map every architecture variant with
+			// every speed recipe and no delay target. A delay target that is too tight
+			// can give a slower netlist than none.
+			if (have_period && !gates && !meets(best)) {
+				// the recipes of the speed mode, or the non-area ones of those selected by the user
+				bool user_recipes = !recipe_sel.empty() || !custom_scripts.empty();
+				std::vector<const MapRecipe *> speed;
+				for (auto &r : user_recipes ? recipes : map_recipes)
+					if (!r.area && (user_recipes || r.effort <= effort))
+						speed.push_back(&r);
+				for (auto arch : archs) {
+					if (speed.empty() || arch->period_only)
+						continue;
+					RTLIL::Module *front = make_front(design, module, arch, has_mul);
+					for (auto r : speed)
+						consider(make_candidate(design, front, arch, r, 0));
+					design->remove(front);
 				}
 			}
 			if (best_front != nullptr && best_front != module)
