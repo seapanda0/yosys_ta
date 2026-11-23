@@ -1,15 +1,120 @@
+# Timing-aware Yosys
+
+> **Written by Claude.** This fork of [Yosys](https://github.com/YosysHQ/yosys) adds timing-aware
+> synthesis. It was built by **Claude, an AI model made by Anthropic**, working in Claude Code at
+> the request of the owner of this fork. It is not part of upstream Yosys and has not been reviewed
+> by YosysHQ, so please don't report problems with it to the Yosys maintainers.
+
+`synth_timing` takes RTL and a liberty library and returns a sized gate-level netlist. Without a
+clock period it builds the fastest netlist it can; with `-period` it returns the smallest one that
+meets that period, trading area for timing.
+
+## Results at a glance
+
+20 designs, SkyWater 130 nm (`sky130_fd_sc_hd`, typical corner). Each design is compared with the
+**fastest of 17 stock Yosys configurations** for that design, including the ORFS script and all
+LibreLane ABC strategies.
+
+| | fmax gain (geomean) | Faster on | Area |
+|---|---|---|---|
+| Before layout | **1.57x** | 20 of 20 | 1.15x |
+| After OpenROAD placement and repair | **1.33x** | 19 of 20 | 1.11x |
+| Designs held out of all tuning (aes, ethmac) | 1.48x / 1.16x | 2 of 2 | 1.03x / 1.00x |
+
+```mermaid
+xychart-beta
+    title "fmax gain over the best stock configuration, after placement"
+    x-axis ["mul32", "add64", "picorv32", "alu32", "md5", "div16", "mac16", "riscv32i", "sha256", "gcd", "ethmac", "usb_cdc", "fir8", "dyn_node", "mul16", "crc32", "cmp_tree", "aes", "spm", "barrel64"]
+    y-axis "fmax / best stock fmax" 0 --> 2.2
+    bar [2.06, 2.00, 1.99, 1.53, 1.48, 1.45, 1.42, 1.39, 1.29, 1.29, 1.27, 1.23, 1.23, 1.19, 1.19, 1.17, 1.08, 1.06, 1.06, 0.90]
+    line [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+```
+
+The line at 1.0 is the best stock netlist; only barrel64 ends below it after placement.
+
+| Design | Best stock fmax | `synth_timing` fmax | Gain (before / after placement) |
+|---|---|---|---|
+| picorv32 (RISC-V CPU) | 207 MHz | 529 MHz | 2.55x / 1.99x |
+| mul32 (32x32 multiplier) | 124 MHz | 286 MHz | 2.30x / 2.06x |
+| add64 (64-bit adder) | 263 MHz | 569 MHz | 2.17x / 2.00x |
+| riscv32i (RISC-V CPU) | 207 MHz | 365 MHz | 1.77x / 1.39x |
+| ethmac (held out) | 246 MHz | 465 MHz | 1.89x / 1.27x |
+| aes (held out) | 291 MHz | 337 MHz | 1.16x / 1.06x |
+
+fmax figures are before layout (OpenSTA). Also measured: none of the 140 timing-aware netlists
+violates max slew or max capacitance (75 of 337 stock netlists do), and 99 of 140 are formally
+proven equivalent, none different.
+
+## What changes compared with stock Yosys
+
+```mermaid
+flowchart LR
+    subgraph stock["Stock Yosys"]
+        direction TB
+        a1["synth"] --> a2["dfflibmap"] --> a3["abc -liberty<br/>(unit-delay mapper)"] --> a4["netlist<br/>(never timed)"]
+    end
+    subgraph ta["synth_timing"]
+        direction TB
+        b1["coarse synthesis"] --> b2["tmap: adder/multiplier<br/>architecture x ABC recipe<br/>(real NLDM delays)"]
+        b2 --> b3["tsize: resize, buffer,<br/>repair slew and cap"]
+        b3 --> b4{"tsta: fastest, or smallest<br/>that meets -period?"}
+        b4 -- "next candidate" --> b2
+        b4 --> b5["netlist"]
+    end
+```
+
+## Quick start
+
+Build exactly like upstream Yosys (see [Building from Source](#building-from-source)), then:
+
+```
+read_verilog design.v
+synth_timing -top top -liberty sky130_fd_sc_hd__tt_025C_1v80.lib              # fastest
+synth_timing -top top -liberty sky130_fd_sc_hd__tt_025C_1v80.lib -period 2.5  # smallest meeting 2.5 ns
+tsta -paths 5                                                                  # report timing
+write_verilog -noattr netlist.v
+```
+
+`tmap` logs every candidate it tried and marks the one it kept (alu32, no period):
+
+```
+  candidate                    wns [ns]  period [ns] fmax [MHz]         area
+  default/speed                 -1.8915       1.8915     528.69     11029.33
+  ks/speed                      -1.7594       1.7594     568.39     11815.08  <-- selected
+  ks/speed2                     -1.8133       1.8133     551.49     12289.29
+```
+
+**Trading area for timing** (alu32, `-period` relaxed from its fastest period):
+
+| `-period` | Achieved period | Area | vs fastest |
+|---|---|---|---|
+| none (fastest) | 1.76 ns | 11,815 | |
+| 2.11 ns | 2.10 ns | 10,332 | -13% |
+| 3.52 ns | 3.31 ns | 8,627 | -27% |
+| 5.28 ns | 5.19 ns | 7,774 | -34% |
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `synth_timing` | RTL to a sized netlist; `-period`, `-input_delay`, `-output_delay`, `-load`, `-wire_cap`, `-effort 0/1/2` |
+| `tmap` | Builds candidates (architecture x mapping recipe), sizes and times each, keeps the best |
+| `tsize` | Timing-driven gate sizing and buffering, then area recovery |
+| `tsta` | Static timing analysis with the library's NLDM tables (within 1.1 ps of OpenSTA on 477 netlists) |
+| `timing_setup` | Stores the liberty file and constraints for the other commands |
+
+The commands also work on an existing netlist: `timing_setup -liberty lib.lib -period 5; tsta; tsize`.
+
+**Limitations:** one ideal clock, no SDC, no hold checks, pre-route timing only, flat designs.
+Default effort takes about 2.3x the runtime of the ORFS flow; `-effort 0` is faster.
+
+**More:** [design, results and limitations](docs/timing_aware_synthesis.md) ·
+[benchmark and verification scripts](examples/timing) · tests in `tests/timing`.
+
+---
+
 yosys – Yosys Open SYnthesis Suite
 ===================================
-
-> **This fork adds timing-aware synthesis, written by Claude.** The branch `timing-aware-synth`
-> adds liberty-based static timing analysis (`tsta`), timing-driven sizing and buffering
-> (`tsize`), timing-driven technology mapping (`tmap`) and the script `synth_timing`, which can
-> target a clock period and trade area for timing. This work was done by **Claude, an AI model made
-> by Anthropic**, working in Claude Code at the request of the owner of this fork. It is not part of
-> upstream Yosys and has not been reviewed by YosysHQ; please do not report problems with it to the
-> Yosys maintainers. Design, results (1.57x fmax before layout and 1.33x after placement over the
-> best of 17 stock configurations, on 20 sky130 designs) and limitations:
-> [docs/timing_aware_synthesis.md](docs/timing_aware_synthesis.md).
 
 This is a framework for RTL synthesis tools. It currently has
 extensive Verilog-2005 support and provides a basic set of
