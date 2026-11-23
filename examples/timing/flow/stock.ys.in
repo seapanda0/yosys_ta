@@ -1,0 +1,14 @@
+# Written by Claude, an AI model made by Anthropic (see docs/timing_aware_synthesis.md).
+# Stock Yosys: synth + dfflibmap + abc, options are given by campaign.py
+read_verilog @VFLAGS@ @FILES@
+synth -top @TOP@ -flatten @SYNTH_OPTS@
+dfflibmap -liberty @LIB@ @DONT_USE@
+abc -liberty @LIB@ @ABC_OPTS@ @DONT_USE@
+opt_clean -purge
+# simulation-only cells ($display etc.) cannot be part of the netlist
+delete t:$print t:$check
+hilomap -hicell sky130_fd_sc_hd__conb_1 HI -locell sky130_fd_sc_hd__conb_1 LO
+opt_clean -purge
+tee -o @OUT@/stat.rpt stat -liberty @LIB@
+tee -o @OUT@/tsta.rpt tsta -quiet -liberty @LIB@ -period @EVAL_PERIOD@
+write_verilog -noattr -noexpr -nohex -nodec @OUT@/net.v

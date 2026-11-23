@@ -1,0 +1,52 @@
+# End-to-end: timing-aware synthesis of a registered adder, checked for
+# equivalence against the RTL.
+read_verilog <<EOT
+module top(input clk, input [7:0] a, b, output reg [8:0] y);
+  reg [7:0] ar, br;
+  always @(posedge clk) begin
+    ar <= a;
+    br <= b;
+    y <= ar + br;
+  end
+endmodule
+EOT
+hierarchy -top top
+proc
+design -save gold
+
+# fastest implementation
+synth_timing -top top -liberty timing.lib -load 0
+select -assert-none t:$* %%
+select -assert-min 9 t:DFF_X1 t:DFF_X2 %%
+design -stash fast
+
+# smallest implementation for a relaxed clock period: must meet timing
+design -load gold
+logger -expect log "top: period 3.0000 ns, wns [0-9.]* ns" 2
+synth_timing -top top -liberty timing.lib -load 0 -period 3
+tsta
+logger -check-expected
+select -assert-none t:$* %%
+design -stash small
+
+# both are equivalent to the RTL
+design -copy-from gold -as gold top
+design -copy-from fast -as gate top
+read_liberty -overwrite timing.lib
+equiv_make gold gate equiv
+hierarchy -top equiv
+flatten
+equiv_simple -seq 2
+equiv_induct
+equiv_status -assert
+
+design -reset
+design -copy-from gold -as gold top
+design -copy-from small -as gate top
+read_liberty -overwrite timing.lib
+equiv_make gold gate equiv
+hierarchy -top equiv
+flatten
+equiv_simple -seq 2
+equiv_induct
+equiv_status -assert

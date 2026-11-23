@@ -1,0 +1,3 @@
+# a period that is not a number must not be read as 0 (optimize for speed)
+logger -expect error "Invalid value '2ns' for -period" 1
+timing_setup -liberty timing.lib -period 2ns

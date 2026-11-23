@@ -1,0 +1,11 @@
+# Written by Claude, an AI model made by Anthropic (see docs/timing_aware_synthesis.md).
+# Timing-aware flow: synth_timing (architecture selection + timing driven mapping + sizing)
+read_verilog @VFLAGS@ @FILES@
+synth_timing -top @TOP@ -liberty @LIB@ @DONT_USE@ -period @PERIOD@ @TA_OPTS@
+# simulation-only cells ($display etc.) cannot be part of the netlist
+delete t:$print t:$check
+hilomap -hicell sky130_fd_sc_hd__conb_1 HI -locell sky130_fd_sc_hd__conb_1 LO
+opt_clean -purge
+tee -o @OUT@/stat.rpt stat -liberty @LIB@
+tee -o @OUT@/tsta.rpt tsta -period @EVAL_PERIOD@
+write_verilog -noattr -noexpr -nohex -nodec @OUT@/net.v

@@ -1,0 +1,65 @@
+# A weak inverter chain that drives a large fanout: sizing and buffering must
+# speed it up, and the result must stay functionally equivalent.
+read_liberty -lib timing.lib
+read_verilog <<EOT
+module top(input clk, input a, input [15:0] b, output [15:0] y);
+  wire q, n1, n2;
+  wire [15:0] d;
+  DFF_X1 ff0 (.CK(clk), .D(a), .Q(q));
+  INV_X1 i1 (.A(q), .Y(n1));
+  INV_X1 i2 (.A(n1), .Y(n2));
+  genvar i;
+  generate for (i = 0; i < 16; i = i + 1) begin : bits
+    NAND2_X1 g (.A(n2), .B(b[i]), .Y(d[i]));
+    DFF_X1 ff (.CK(clk), .D(d[i]), .Q(y[i]));
+  end endgenerate
+endmodule
+EOT
+hierarchy -top top
+design -save start
+
+timing_setup -liberty timing.lib -load 0
+tsta
+# n2 drives 16 loads of 2 fF with an INV_X1:
+#   q:  0.210, slew 0.030;  n1: +0.033, slew 0.0315
+#   n2: +0.02 + 5*0.032 + 0.1*0.0315 = +0.18315, slew 0.01 + 10*0.032 + 0.05*0.0315 = 0.331575
+#   d:  +0.03 + 6*0.002 + 0.1*0.331575 = +0.0751575, slew 0.034 + 0.05*0.331575 = 0.05057875
+#   setup 0.1 + 0.2*0.05057875 -> min period 0.5013075 + 0.11011575 = 0.611423
+scratchpad -assert timing.result.min_period 0.611423
+
+# speed: stronger cells and/or buffers on the high fanout net
+tsize -selfcheck
+tsta
+select -assert-min 1 t:INV_X2 t:INV_X4 t:BUF_X1 t:BUF_X4 t:DFF_X2 %%
+logger -expect log "top: period 0.0000 ns, wns -0.[0-4][0-9]* ns" 1
+tsta
+logger -check-expected
+
+# with a relaxed period nothing has to change
+design -load start
+tsize -period 1
+select -assert-count 2 t:INV_X1
+select -assert-none t:BUF_X1 t:BUF_X4 t:INV_X2 t:INV_X4 %%
+
+# with a clock period the optimization stops as soon as the period is met
+design -load start
+tsize -period 0.5
+logger -expect log "top: period 0.5000 ns, wns 0.[0-9]* ns" 1
+tsta -period 0.5
+logger -check-expected
+
+# equivalence of the optimized netlist (with the cell models of the library)
+design -load start
+tsize
+design -stash gate
+design -load start
+design -stash gold
+design -copy-from gold -as gold top
+design -copy-from gate -as gate top
+read_liberty -overwrite timing.lib
+equiv_make gold gate equiv
+hierarchy -top equiv
+flatten
+equiv_simple
+equiv_induct
+equiv_status -assert

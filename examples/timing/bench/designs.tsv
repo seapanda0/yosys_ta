@@ -1,0 +1,20 @@
+picorv32	picorv32	clk	picorv32.v	-
+sha256	sha256_core	clk	sha256_core.v sha256_k_constants.v sha256_w_mem.v	-
+aes	aes_core	clk	aes_core.v aes_decipher_block.v aes_encipher_block.v aes_inv_sbox.v aes_key_mem.v aes_sbox.v aes.v	-
+gcd	gcd	clk	gcd.v	-
+riscv32i	riscv	clk	adder.v aludec.v alu.v controller.v datapath.v dmem.v flopenr.v flopens.v flopr.v magcompare2b.v magcompare2c.v magcompare32.v maindec.v mux2.v mux3.v mux4.v mux5.v mux8.v regfile.v riscv.v rom.v shifter.v signext.v top.v	-
+dynamic_node	dynamic_node_top_wrap	clk	dynamic_node.pickle.v	-
+ethmac	ethmac	wb_clk_i	eth_clockgen.v eth_cop.v eth_crc.v eth_fifo.v eth_maccontrol.v ethmac_defines.v eth_macstatus.v ethmac.v eth_miim.v eth_outputcontrol.v eth_random.v eth_receivecontrol.v eth_registers.v eth_register.v eth_rxaddrcheck.v eth_rxcounters.v eth_rxethmac.v eth_rxstatem.v eth_shiftreg.v eth_spram_256x32.v eth_top.v eth_transmitcontrol.v eth_txcounters.v eth_txethmac.v eth_txstatem.v eth_wishbone.v timescale.v	-I.
+md5	md5	clk	md5.v	-
+usb_cdc_core	usb_cdc_core	clk_i	usb_cdc_core.v usb_desc_rom.v usbf_crc16.v usbf_defs.v usbf_device_core.v usbf_sie_rx.v usbf_sie_tx.v	-I.
+spm	spm	clk	spm.v	-
+add64	add64	clk	add64.v	-
+mul16	mul16	clk	mul16.v	-
+mul32	mul32	clk	mul32.v	-
+mac16	mac16	clk	mac16.v	-
+alu32	alu32	clk	alu32.v	-
+fir8	fir8	clk	fir8.v	-
+cmp_tree	cmp_tree	clk	cmp_tree.v	-
+barrel64	barrel64	clk	barrel64.v	-
+div16	div16	clk	div16.v	-
+crc32x64	crc32x64	clk	crc32x64.v	-
