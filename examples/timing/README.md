@@ -28,5 +28,5 @@ The stages are resumable (`results/<stage>.jsonl`). The full campaign takes hour
 | `flow/sta_eval.tcl`, `flow/limits_eval.tcl` | OpenSTA: timing, slew and capacitance violations. |
 | `pnr/pnr_run.sh <design> <tag> <period>` | OpenROAD: placement, `repair_design`, `repair_timing`. No clock tree, no routing. |
 | `verify/formal.sh <design> <netlist>` | Sequential equivalence (ABC) of a netlist and the design at the input of `tmap`. |
-| `verify/check.sh <design> <netlist>` | Random simulation of a netlist against the RTL. A weak check for processors, which random instructions send into a trap. |
+| `verify/check.sh <design> <netlist>` | Random simulation of a netlist against the RTL, or against a second netlist with `REF_NET=<netlist>`. A weak check for processors, which random instructions send into a trap. |
 | `flow/prep.sh`, `flow/study_*` | The study that the mapping recipes were selected with. |

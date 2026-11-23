@@ -1,7 +1,7 @@
 #!/bin/bash
 # Random-simulation equivalence check: RTL reference vs. synthesized sky130 netlist.
 #
-# usage :  verify/check.sh <design> <netlist.v> [cycles=3000] [seed=1]
+# usage :  [REF_NET=<netlist.v>] verify/check.sh <design> <netlist.v> [cycles=3000] [seed=1]
 #   <design> must be a name in bench/designs.tsv.
 #   <netlist.v> is a flat gate-level netlist whose top module is the design's top.
 #
@@ -39,7 +39,7 @@ BENCH=$ROOT/bench/$design
 [ -d "$BENCH" ] || fail_err "bench dir missing: $BENCH"
 [ -x "$YOSYS" ] || fail_err "yosys not executable: $YOSYS"
 
-WORK=$VDIR/work/${design}.$(basename "$(dirname "$net")")
+WORK=$VDIR/work/${design}.$(basename "$(dirname "$net")")${REF_NET:+.vs.$(basename "$(dirname "$REF_NET")")}
 mkdir -p "$WORK" || fail_err "cannot create $WORK"
 rm -f "$WORK"/ref.v "$WORK"/gate.v "$WORK"/tb.v "$WORK"/sim "$WORK"/*.log
 
@@ -47,6 +47,19 @@ rm -f "$WORK"/ref.v "$WORK"/gate.v "$WORK"/tb.v "$WORK"/sim "$WORK"/*.log
 # Run from the bench dir so relative includes (-I.) and file names resolve.
 # zinit -all gives every flop (incl. memory words) a zero init value; the
 # setundef lines only cover existing x-init attributes.
+# With REF_NET=<netlist>, a second gate-level netlist is the reference instead of the RTL.
+if [ -n "${REF_NET:-}" ]; then
+    "$YOSYS" -l "$WORK/ref_yosys.log" -q -p "
+        read_liberty -ignore_miss_func -ignore_miss_dir $LIB;
+        read_verilog $(realpath "$REF_NET");
+        hierarchy -check -top $top;
+        flatten; proc; opt_clean;
+        setundef -zero; setundef -init -zero;
+        zinit -all; opt_clean;
+        rename $top ref_top;
+        write_verilog -noattr $WORK/ref.v" > "$WORK/ref_yosys.out" 2>&1 \
+    || { tail -20 "$WORK/ref_yosys.out"; fail_err "yosys failed on REF_NET (see $WORK/ref_yosys.log)"; }
+else
 (
     cd "$BENCH" && "$YOSYS" -l "$WORK/ref_yosys.log" -q -p "
         read_verilog $flags $files;
@@ -57,6 +70,7 @@ rm -f "$WORK"/ref.v "$WORK"/gate.v "$WORK"/tb.v "$WORK"/sim "$WORK"/*.log
         rename $top ref_top;
         write_verilog -noattr $WORK/ref.v"
 ) > "$WORK/ref_yosys.out" 2>&1 || { tail -20 "$WORK/ref_yosys.out"; fail_err "yosys failed on RTL (see $WORK/ref_yosys.log)"; }
+fi
 
 # ---- 2. Gate-level netlist (functional sky130 cell models) -----------------
 # -ignore_miss_func: some cells (e.g. dlclkp) lack a function on an output.

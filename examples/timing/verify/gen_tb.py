@@ -12,7 +12,7 @@ import re
 import sys
 
 DECL = re.compile(
-    r'^\s*(input|output|inout)\s+(?:wire\s+|reg\s+)?'
+    r'^\s*(input|output|inout)\s+(?:wire\s+|reg\s+)?(?:signed\s+)?'
     r'(?:\[\s*(-?\d+)\s*:\s*(-?\d+)\s*\]\s*)?'
     r'(\\\S+|[A-Za-z_]\w*)\s*;',
     re.M,
