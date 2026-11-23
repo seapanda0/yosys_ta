@@ -1,3 +1,4 @@
+# Written by Claude, an AI model made by Anthropic (see docs/timing_aware_synthesis.md).
 # Common settings (sourced by the scripts)
 export TA_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export LIB=${LIB:-${PDKPATH:?set PDKPATH to the sky130A directory}/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib}

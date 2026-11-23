@@ -1,4 +1,5 @@
 #!/bin/bash
+# Written by Claude, an AI model made by Anthropic (see docs/timing_aware_synthesis.md).
 # pnr_run.sh <design> <run_tag> <period_ns> [util]
 # Run INSIDE the container (bash -lc). Looks up top/clock for <design> in bench/designs.tsv,
 # runs pnr_eval.tcl on runs/<design>/<run_tag>/net.v and prints the PNR_RESULT lines.

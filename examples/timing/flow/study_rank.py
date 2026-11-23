@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Written by Claude, an AI model made by Anthropic (see docs/timing_aware_synthesis.md).
 """usage: study_rank.py [results.tsv] [reference_script] [variant]
 Ranks ABC scripts by the geometric mean of the sized min period, normalized per design to the reference script."""
 import sys, math, collections

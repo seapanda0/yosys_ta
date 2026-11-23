@@ -4,6 +4,12 @@ This document describes the timing-aware synthesis flow that was added to Yosys 
 `timing-aware-synth` branch: what was built, why, how it is structured, how to use it, and what it
 achieves on a set of benchmark designs with the SkyWater 130 nm (sky130_fd_sc_hd) library.
 
+> **Authorship.** The timing-aware synthesis flow, its tests, the benchmark and validation
+> scripts, the benchmark campaign and this document were written by **Claude**, an AI model made by
+> Anthropic, working in Claude Code at the request of the owner of this repository. It is not a
+> product of the Yosys maintainers (YosysHQ) and has not been reviewed by them. Every commit on the
+> branch carries a `Co-Authored-By: Claude` trailer.
+
 **Results in short** (20 designs, sky130_fd_sc_hd, section 6). Each design is compared with the
 fastest of 17 stock Yosys configurations for that design, among them the ORFS script and all
 LibreLane ABC strategies:

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Written by Claude, an AI model made by Anthropic (see docs/timing_aware_synthesis.md).
 # Generates timing.lib, a tiny NLDM library for the timing tests. The delay tables are linear:
 #   delay      = t0 + R * load + 0.1 * input_slew
 #   transition = 0.01 + 2 * R * load + 0.05 * input_slew

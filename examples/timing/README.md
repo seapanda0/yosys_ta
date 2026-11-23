@@ -1,6 +1,8 @@
 # Timing-aware synthesis: benchmark and validation scripts
 
-These scripts produce the results in `docs/timing_aware_synthesis.md`.
+These scripts produce the results in `docs/timing_aware_synthesis.md`. They were written by Claude,
+an AI model made by Anthropic, like the rest of the timing-aware synthesis work (see the authorship
+note in that document).
 
 ## Requirements
 

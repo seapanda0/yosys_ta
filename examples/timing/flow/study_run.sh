@@ -1,5 +1,6 @@
 #!/bin/bash
-# usage: study_run.sh <design> <variant: default|ks> <abc script file>   
+# Written by Claude, an AI model made by Anthropic (see docs/timing_aware_synthesis.md).
+# usage: study_run.sh <design> <variant: default|ks> <abc script file>
 # Maps the snapshot with the given ABC script, then reports timing before and after 'tsize'.
 # Output: one TSV line: design variant script period_abc area_abc period_sized area_sized seconds
 . "$(dirname "$0")/common.sh"

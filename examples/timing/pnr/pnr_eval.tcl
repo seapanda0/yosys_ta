@@ -1,3 +1,4 @@
+# Written by Claude, an AI model made by Anthropic (see docs/timing_aware_synthesis.md).
 # pnr_eval.tcl -- post-placement max-frequency evaluation of a sky130A (sky130_fd_sc_hd)
 # gate-level netlist. Floorplan -> pin placement -> global placement -> legalization ->
 # repair (repair_design / repair_timing) -> legalization, with an ideal clock (no CTS, no routing).

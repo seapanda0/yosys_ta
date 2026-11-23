@@ -1,4 +1,5 @@
 #!/bin/bash
+# Written by Claude, an AI model made by Anthropic (see docs/timing_aware_synthesis.md).
 # Random-simulation equivalence check: RTL reference vs. synthesized sky130 netlist.
 #
 # usage :  [REF_NET=<netlist.v>] verify/check.sh <design> <netlist.v> [cycles=3000] [seed=1]

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Written by Claude, an AI model made by Anthropic (see docs/timing_aware_synthesis.md).
 """Benchmark campaign: timing-aware synthesis against the best stock Yosys configuration of every design.
 
 usage: campaign.py <stage>...

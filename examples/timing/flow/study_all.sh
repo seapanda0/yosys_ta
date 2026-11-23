@@ -1,5 +1,6 @@
 #!/bin/bash
-# usage: study_all.sh <variant> "<designs>" <script.abc>...    
+# Written by Claude, an AI model made by Anthropic (see docs/timing_aware_synthesis.md).
+# usage: study_all.sh <variant> "<designs>" <script.abc>...
 # Runs all design x script combinations (7 in parallel), appends to study/results.tsv
 . "$(dirname "$0")/common.sh"
 V=$1; DESIGNS=$2; shift 2

@@ -1,4 +1,5 @@
 #!/bin/bash
+# Written by Claude, an AI model made by Anthropic (see docs/timing_aware_synthesis.md).
 # usage: prep.sh <design>    -- writes pre-mapping RTLIL snapshots for the ABC recipe study:
 #   study/pre/<design>.default.il  (stock 'synth -flatten' + dfflibmap)
 #   study/pre/<design>.ks.il       (same, with Kogge-Stone adders)

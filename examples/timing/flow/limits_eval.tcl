@@ -1,3 +1,4 @@
+# Written by Claude, an AI model made by Anthropic (see docs/timing_aware_synthesis.md).
 read_liberty $::env(LIB); read_verilog $::env(NET); link_design $::env(TOP)
 create_clock -name clk -period 10 [get_ports $::env(CLK)]
 set_load 0.0334 [all_outputs]

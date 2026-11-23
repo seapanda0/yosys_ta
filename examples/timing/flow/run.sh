@@ -1,5 +1,6 @@
 #!/bin/bash
-# usage: run.sh <design> <flow> <period_ns> [tag]     
+# Written by Claude, an AI model made by Anthropic (see docs/timing_aware_synthesis.md).
+# usage: run.sh <design> <flow> <period_ns> [tag]
 # Runs flow/<flow>.ys.in on the design, then OpenSTA. Prints one RESULT line.
 set -e
 . "$(dirname "$0")/../flow/common.sh"

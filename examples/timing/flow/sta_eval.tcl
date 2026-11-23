@@ -1,3 +1,4 @@
+# Written by Claude, an AI model made by Anthropic (see docs/timing_aware_synthesis.md).
 # OpenSTA evaluation of a mapped netlist. Inputs via env: LIB NET TOP CLK PERIOD [RPT]
 # Convention: ideal clock, ideal input drivers, input/output delay 0, 33.4 fF on outputs.
 set T $::env(PERIOD)

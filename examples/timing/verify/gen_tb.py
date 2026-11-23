@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Written by Claude, an AI model made by Anthropic (see docs/timing_aware_synthesis.md).
 """Generate a self-checking random-simulation testbench that drives an RTL
 reference (module ref_top) and a gate-level netlist (module gate_top) with the
 same stimulus and compares every output before each rising clock edge.

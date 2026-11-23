@@ -1,4 +1,5 @@
 #!/bin/bash
+# Written by Claude, an AI model made by Anthropic (see docs/timing_aware_synthesis.md).
 # usage: formal.sh <design> <netlist.v>
 # Sequential equivalence of a netlist and the design at the input of tmap (bit-blasted without ABC),
 # all flip-flops starting at zero. The miter is built by Yosys, which pairs the ports by name

@@ -1,3 +1,4 @@
+# Written by Claude, an AI model made by Anthropic (see docs/timing_aware_synthesis.md).
 # Timing-aware flow: synth_timing (architecture selection + timing driven mapping + sizing)
 read_verilog @VFLAGS@ @FILES@
 synth_timing -top @TOP@ -liberty @LIB@ @DONT_USE@ -period @PERIOD@ @TA_OPTS@

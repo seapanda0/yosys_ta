@@ -1,6 +1,16 @@
 yosys – Yosys Open SYnthesis Suite
 ===================================
 
+> **This fork adds timing-aware synthesis, written by Claude.** The branch `timing-aware-synth`
+> adds liberty-based static timing analysis (`tsta`), timing-driven sizing and buffering
+> (`tsize`), timing-driven technology mapping (`tmap`) and the script `synth_timing`, which can
+> target a clock period and trade area for timing. This work was done by **Claude, an AI model made
+> by Anthropic**, working in Claude Code at the request of the owner of this fork. It is not part of
+> upstream Yosys and has not been reviewed by YosysHQ; please do not report problems with it to the
+> Yosys maintainers. Design, results (1.57x fmax before layout and 1.33x after placement over the
+> best of 17 stock configurations, on 20 sky130 designs) and limitations:
+> [docs/timing_aware_synthesis.md](docs/timing_aware_synthesis.md).
+
 This is a framework for RTL synthesis tools. It currently has
 extensive Verilog-2005 support and provides a basic set of
 synthesis algorithms for various application domains.
